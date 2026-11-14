@@ -17,6 +17,7 @@
 #   RUNTIME_APP_TCP=1    enable the application TCP server
 #   BASALT_TRAJECTORY    write the Basalt trajectory CSV here
 #   DURATION_SEC         stop after this many seconds (default 0, until Ctrl+C)
+#   CAPTURE_ONLY=1       run only capture_service_cpp, for calibration recording
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,6 +84,12 @@ done
 if [[ ! -s "$CAPTURE_REGISTRY" ]]; then
   echo "[nreal_light] capture did not publish $CAPTURE_REGISTRY; see $LOG_DIR/capture.log" >&2
   exit 1
+fi
+
+if [[ "${CAPTURE_ONLY:-0}" == "1" ]]; then
+  echo "[nreal_light] capture only; streams in $CAPTURE_REGISTRY, log in $LOG_DIR/capture.log"
+  wait "${pids[0]}"
+  exit 0
 fi
 
 if [[ -z "${BASALT_CALIB:-}" ]]; then

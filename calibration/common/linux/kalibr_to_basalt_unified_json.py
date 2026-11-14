@@ -105,10 +105,10 @@ def require_matrix4(name: str, value: Any) -> List[List[float]]:
 def camera_intrinsics(name: str, cam: Dict[str, Any]) -> Dict[str, Any]:
     camera_model = cam.get("camera_model")
     distortion_model = cam.get("distortion_model")
-    if camera_model != "pinhole" or distortion_model != "equidistant":
+    if camera_model != "pinhole" or distortion_model not in ("equidistant", "radtan"):
         raise ValueError(
             f"{name}: unsupported Kalibr model {camera_model!r}/{distortion_model!r}; "
-            "the current runtime converter only supports pinhole-equi -> kb4"
+            "the runtime converter supports pinhole-equi -> kb4 and pinhole-radtan -> pinhole-radtan8"
         )
 
     intrinsics = cam.get("intrinsics")
@@ -119,11 +119,31 @@ def camera_intrinsics(name: str, cam: Dict[str, Any]) -> Dict[str, Any]:
         )
     if not isinstance(distortion, list) or len(distortion) != 4:
         raise ValueError(
-            f"{name}: expected exactly four equidistant distortion coefficients"
+            f"{name}: expected exactly four {distortion_model} distortion coefficients"
         )
 
     fx, fy, cx, cy = [float(v) for v in intrinsics]
     d = [float(v) for v in distortion]
+    if distortion_model == "radtan":
+        # Kalibr radtan is [k1, k2, p1, p2]; Basalt radtan8 adds k3..k6.
+        return {
+            "camera_type": "pinhole-radtan8",
+            "intrinsics": {
+                "fx": fx,
+                "fy": fy,
+                "cx": cx,
+                "cy": cy,
+                "k1": d[0],
+                "k2": d[1],
+                "p1": d[2],
+                "p2": d[3],
+                "k3": 0.0,
+                "k4": 0.0,
+                "k5": 0.0,
+                "k6": 0.0,
+                "rpmax": -1.0,
+            },
+        }
     return {
         "camera_type": "kb4",
         "intrinsics": {

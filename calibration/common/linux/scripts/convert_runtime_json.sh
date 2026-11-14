@@ -143,8 +143,8 @@ if not math.isclose(actual_rate, expected_rate, rel_tol=0.0, abs_tol=1e-9):
     raise SystemExit(
         f"[convert-runtime][ERROR] IMU rate mismatch: expected {expected_rate}, got {actual_rate}"
     )
-if not all(cam.get("camera_type") == "kb4" for cam in value["intrinsics"]):
-    raise SystemExit("[convert-runtime][ERROR] expected kb4 runtime cameras")
+if not all(cam.get("camera_type") in ("kb4", "pinhole-radtan8") for cam in value["intrinsics"]):
+    raise SystemExit("[convert-runtime][ERROR] expected kb4 or pinhole-radtan8 runtime cameras")
 if no_imu:
     identity = {
         "px": 0.0,
