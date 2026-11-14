@@ -7,8 +7,11 @@ bottom, and black squares of tagSpacing * tagSize at every tag corner.
 Every edge falls on a whole pixel, so the screen shows sharp corners.
 
 Outputs a PNG, the Kalibr target YAML, and an HTML page that shows the PNG
-with one image pixel per device pixel. Measure one tag on the screen with a
-ruler and pass the measured size with --measured-tag-mm if it differs.
+with one image pixel per CSS device pixel. macOS display scaling other than
+the default renders at a different size and resamples, so the shown board is
+not the design size. Always measure the full board width on the screen and
+pass the derived tag size with --measured-tag-mm: tag = width * tag_px /
+(cols * tag_px + (cols + 1) * gap_px). Kalibr distances scale with it.
 """
 from __future__ import annotations
 

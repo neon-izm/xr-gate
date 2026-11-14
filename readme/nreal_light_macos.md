@@ -112,10 +112,43 @@ python3 calibration/nreal_light/factory_to_basalt.py \
   factory camera offset.
 
 The factory values were not estimated together with this pipeline's timing.
-For better tracking, record an Aprilgrid dataset and run Kalibr as for the
-Ultra (`calibration/common/linux`), then pass the result with
-`BASALT_CALIB=/path/basalt_calib.json`. The Kalibr converter in this repository
-only handles pinhole-equi; Nreal Light lenses fit pinhole-radtan.
+
+### Kalibr with an AprilGrid on the laptop screen
+
+The `nreal_light` target of `calibration/common/linux` runs Kalibr in Docker
+(amd64 image under emulation on Apple Silicon) and converts `pinhole-radtan`
+results to Basalt `pinhole-radtan8`. The AprilGrid is shown on the MacBook
+screen:
+
+```bash
+python3 calibration/nreal_light/make_screen_aprilgrid.py \
+  --out-dir ~/xr_calib/nreal_light/targets --cols 5 --rows 3 --bit-px 40
+open ~/xr_calib/nreal_light/targets/aprilgrid_screen_5x3_400px.html   # f: full screen
+```
+
+The cameras see about 100 degrees, so the board must fill a large part of the
+image at 15 to 25 cm; 32 mm tags on a 6x4 board were detected unreliably. The
+screen loses contrast at oblique angles. Measure the full board width on the
+screen and write the measured tag size into the target YAML with
+`--measured-tag-mm`. With a non-default macOS display scaling the tested
+board was 0.831 of its design size, and Kalibr scales all distances with it.
+
+```bash
+./calibration/common/linux/calibrate.sh --target nreal_light install
+CAPTURE_ONLY=1 devices/nreal_light/scripts/macos/start.sh        # terminal 1
+~/.venvs/xreal_capture_service/bin/python calibration/nreal_light/check_grid_view.py  # optional
+SECONDS_TOTAL=90 PYTHON_BIN=~/.venvs/xreal_capture_service/bin/python \
+  ./calibration/common/linux/calibrate.sh --target nreal_light record   # terminal 2
+./calibration/common/linux/calibrate.sh --target nreal_light bag
+./calibration/common/linux/calibrate.sh --target nreal_light camera
+./calibration/common/linux/calibrate.sh --target nreal_light save-camera
+./calibration/common/linux/calibrate.sh --target nreal_light imu-camera
+./calibration/common/linux/calibrate.sh --target nreal_light convert-runtime
+```
+
+The recorder needs numpy and OpenCV, for example in
+`~/.venvs/xreal_capture_service`. Pass the result to `start.sh` with
+`BASALT_CALIB=/path/basalt_calib.json`.
 
 ## Measured on the tested unit
 
