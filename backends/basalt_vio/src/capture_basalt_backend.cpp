@@ -49,6 +49,17 @@ std::atomic_bool g_stop{false};
 
 void handle_signal(int) { g_stop = true; }
 
+// Upstream Basalt names the image queue input_queue. The Monado fork used for
+// macOS builds splits it into input_img_queue and input_imu_queue.
+template <typename OpticalFlow>
+auto& optical_flow_image_queue(OpticalFlow& flow) {
+#ifdef XR_BASALT_MONADO_FORK
+  return flow.input_img_queue;
+#else
+  return flow.input_queue;
+#endif
+}
+
 basalt::Calibration<double> load_calibration(const std::string& path) {
   basalt::Calibration<double> calib;
   std::ifstream is(path, std::ios::binary);
@@ -744,6 +755,14 @@ int main(int argc, char** argv) {
     out_state_queue.set_capacity(10000);
     opt_flow_ptr->output_queue = &vio->vision_data_queue;
     vio->out_state_queue = &out_state_queue;
+#ifdef XR_BASALT_MONADO_FORK
+    // The fork does not start optical flow in its factory, and its flow uses
+    // VIO depth and state feedback for matching guesses.
+    vio->opt_flow_depth_guess_queue = &opt_flow_ptr->input_depth_queue;
+    vio->opt_flow_state_queue = &opt_flow_ptr->input_state_queue;
+    vio->opt_flow_lm_bundle_queue = &opt_flow_ptr->input_lm_bundle_queue;
+    opt_flow_ptr->start();
+#endif
     // Initialize only after the startup gates pass and a complete input exists.
     // Sending nullptr as the first IMU to an initialized VIO aborts upstream.
     bool estimator_started = false;
@@ -1018,7 +1037,7 @@ int main(int argc, char** argv) {
         }
         imu_count_total += imu_batch.size();
         if (use_imu) imu_feeder.submit(std::move(imu_batch));
-        while (!opt_flow_ptr->input_queue.try_push(input)) {
+        while (!optical_flow_image_queue(*opt_flow_ptr).try_push(input)) {
           if (vio->finished.load()) throw std::runtime_error("VIO stopped accepting images");
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -1048,7 +1067,7 @@ int main(int argc, char** argv) {
       }
       // IMU EOS is independent of the image queue, including after IMU loss.
       imu_feeder.finish();
-      while (!opt_flow_ptr->input_queue.try_push(nullptr)) {
+      while (!optical_flow_image_queue(*opt_flow_ptr).try_push(nullptr)) {
         if (vio->finished.load()) {
           basalt::OpticalFlowResult::Ptr unused;
           vio->vision_data_queue.try_pop(unused);
@@ -1063,7 +1082,7 @@ int main(int argc, char** argv) {
     if (print_queue) {
       queue_thread = std::thread([&]() {
         while (!g_stop && !input_finished) {
-          std::cout << "[capture_basalt_backend] queues: opt_in=" << opt_flow_ptr->input_queue.size()
+          std::cout << "[capture_basalt_backend] queues: opt_in=" << optical_flow_image_queue(*opt_flow_ptr).size()
                     << " opt_out=" << (opt_flow_ptr->output_queue ? opt_flow_ptr->output_queue->size() : 0)
                     << " state_out=" << out_state_queue.size()
                     << " imu_in=" << vio->imu_data_queue.size()

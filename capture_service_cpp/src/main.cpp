@@ -5,6 +5,9 @@
 #include "capture_service_cpp/sources/imu_source.hpp"
 #include "capture_service_cpp/stream_publishers.hpp"
 #include "capture_service_cpp/timing/xreal_device_clock.hpp"
+#ifdef XR_CAPTURE_HAS_NREAL_LIGHT
+#include "capture_service_cpp/vendor/nreal_light_usb.hpp"
+#endif
 
 #include <csignal>
 #include <iostream>
@@ -32,6 +35,14 @@ int main(int argc, char** argv) {
     std::unique_ptr<ICameraSource> camera_source;
     std::unique_ptr<IImuSource> imu_source;
     auto xreal_clock = std::make_shared<XrealDeviceClock>();
+#ifdef XR_CAPTURE_HAS_NREAL_LIGHT
+    std::shared_ptr<NrealLightUsb> nreal_light_usb;
+    if ((cfg.camera.enabled && cfg.camera.driver == "nreal_light") ||
+        (cfg.imu.enabled && cfg.imu.driver == "nreal_light")) {
+      nreal_light_usb = acquire_nreal_light_usb(cfg.nreal_light);
+      drop_sudo_privileges(cfg.nreal_light);
+    }
+#endif
     if (cfg.camera.enabled) camera_source = create_camera_source(cfg, xreal_clock);
     if (cfg.imu.enabled) imu_source = create_imu_source(cfg, xreal_clock);
 

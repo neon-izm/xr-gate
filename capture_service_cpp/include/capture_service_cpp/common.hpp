@@ -179,6 +179,23 @@ struct ImuSourceConfig {
   SyntheticImuConfig synthetic;
 };
 
+// Nreal Light exposes the SLAM cameras and the IMU on one OV580 USB device, so
+// the camera and IMU sources share a single libusb session.
+struct NrealLightConfig {
+  // The factory blob read from the OV580 at startup is written here so the
+  // Basalt calibration exporter can use the same bytes.
+  std::string factory_config_path = "/tmp/nreal_light_factory.bin";
+  // Apply factory bias, scale, skew, g-sensitivity and accel_q_gyro to the IMU
+  // samples. Basalt then receives calibrated samples and identity IMU models.
+  bool apply_factory_imu = true;
+  // Added to the OV580 frame clock. 0 means the factory trailer value
+  // camera_imu_timestamp_offset_us, or 39000 when the trailer has no value.
+  int64_t camera_timestamp_offset_us = 0;
+  int bulk_transfers = 4;
+  // Send "@3 1" and the 250 ms heartbeat to the glasses MCU.
+  bool mcu_heartbeat = true;
+};
+
 struct RuntimeConfig {
   std::string registry_path = "/tmp/capture_service_streams.json";
   std::string namespace_name = "xreal_air2ultra_linux";
@@ -202,6 +219,7 @@ struct RuntimeConfig {
 
   CameraSourceConfig camera;
   ImuSourceConfig imu;
+  NrealLightConfig nreal_light;
 };
 
 uint64_t steady_ns();

@@ -62,9 +62,15 @@ if(WIN32)
     src/platform/windows/shm_publisher_windows.cpp
   )
 else()
+  # macOS reuses the POSIX implementations. Only the V4L2 control backend is Linux-only.
+  if(APPLE)
+    set(CAPTURE_SERVICE_CPP_CAMERA_CONTROLS src/platform/macos/camera_controls_macos.cpp)
+  else()
+    set(CAPTURE_SERVICE_CPP_CAMERA_CONTROLS src/platform/linux/camera_controls_linux.cpp)
+  endif()
   list(APPEND CAPTURE_SERVICE_CPP_SOURCES
     src/platform/linux/camera_capture_linux.cpp
-    src/platform/linux/camera_controls_linux.cpp
+    ${CAPTURE_SERVICE_CPP_CAMERA_CONTROLS}
     src/platform/linux/capabilities_linux.cpp
     src/platform/linux/process_linux.cpp
     src/platform/linux/runtime_defaults_linux.cpp
@@ -73,9 +79,30 @@ else()
   )
 endif()
 
+# Nreal Light streams its SLAM cameras and IMU over one OV580 libusb session.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(LIBUSB1 QUIET IMPORTED_TARGET libusb-1.0)
+endif()
+if(TARGET PkgConfig::LIBUSB1)
+  message(STATUS "capture_service_cpp Nreal Light driver enabled")
+  list(APPEND CAPTURE_SERVICE_CPP_SOURCES
+    src/sources/nreal_light_camera_source.cpp
+    src/sources/nreal_light_imu_source.cpp
+    src/vendor/nreal_light_codec.cpp
+    src/vendor/nreal_light_usb.cpp
+  )
+else()
+  message(STATUS "capture_service_cpp Nreal Light driver disabled; libusb-1.0 not found")
+endif()
+
 add_executable(capture_service_cpp ${CAPTURE_SERVICE_CPP_SOURCES})
 target_include_directories(capture_service_cpp PRIVATE include "${CMAKE_CURRENT_SOURCE_DIR}/../shared/include" ${HIDAPI_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(capture_service_cpp PRIVATE ${OpenCV_LIBS} ${HIDAPI_LIBRARY} Threads::Threads)
+if(TARGET PkgConfig::LIBUSB1)
+  target_compile_definitions(capture_service_cpp PRIVATE XR_CAPTURE_HAS_NREAL_LIGHT)
+  target_link_libraries(capture_service_cpp PRIVATE PkgConfig::LIBUSB1)
+endif()
 
 # Small metadata-only client used by backend launchers before the main capture
 # transport is opened. It intentionally has no OpenCV or HID dependency.
@@ -220,6 +247,16 @@ if(BUILD_TESTING)
   target_include_directories(xreal_camera_decoder_smoke PRIVATE include)
   target_link_libraries(xreal_camera_decoder_smoke PRIVATE ${OpenCV_LIBS})
   add_test(NAME xreal_camera_decoder_smoke COMMAND xreal_camera_decoder_smoke)
+
+  if(TARGET PkgConfig::LIBUSB1)
+    add_executable(nreal_light_codec_smoke
+      tests/nreal_light_codec_smoke.cpp
+      src/vendor/nreal_light_codec.cpp
+    )
+    target_include_directories(nreal_light_codec_smoke PRIVATE include ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(nreal_light_codec_smoke PRIVATE ${OpenCV_LIBS})
+    add_test(NAME nreal_light_codec_smoke COMMAND nreal_light_codec_smoke)
+  endif()
 
   add_executable(imu_transform_smoke
     tests/imu_transform_smoke.cpp

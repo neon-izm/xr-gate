@@ -1,0 +1,59 @@
+version: 1
+
+# Nreal Light (OV580 05a9:0680) over libusb on macOS.
+# Frames arrive as one 640x481 bulk image: even rows are the left camera, odd
+# rows are the right camera, and the last row carries the device timestamp.
+# The cameras are mounted upright, so no rotation or flip is needed.
+# Camera times are device time + camera_imu_timestamp_offset_us from the
+# factory blob, mapped to host time through the IMU-trained clock model.
+service:
+  namespace: nreal_light
+  registry_path: /tmp/capture_service_streams.json
+  slot_count: 256
+  publish: [shm]
+  tcp:
+    bind_host: 127.0.0.1
+    port: 45660
+    client_queue_size: 256
+
+camera:
+  enabled: true
+  driver: nreal_light
+  timestamp_mode: device
+  slot_count: 8
+  output:
+    left_stream: camera0
+    right_stream: camera1
+    left_frame: camera0
+    right_frame: camera1
+    width: 640
+    height: 480
+  transform:
+    left:
+      rotate: none
+      flip: none
+    right:
+      rotate: none
+      flip: none
+  stall_exit_ms: 2000
+
+imu:
+  enabled: true
+  driver: nreal_light
+  slot_count: 4096
+  output:
+    stream: imu0
+    frame: imu0
+  raw:
+    enabled: false
+  stall_exit_ms: 2000
+
+nreal_light:
+  # capture_service_cpp reads the factory calibration from the glasses on
+  # every start and writes it here for factory_to_basalt.py.
+  factory_config_path: /tmp/nreal_light_factory.bin
+  # Subtract factory bias, scale, skew and g-sensitivity before publishing.
+  apply_factory_imu: true
+  # 0 uses camera_imu_timestamp_offset_us from the factory blob.
+  camera_timestamp_offset_us: 0
+  bulk_transfers: 4

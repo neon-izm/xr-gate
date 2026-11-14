@@ -44,20 +44,47 @@ target_include_directories(capture_basalt_backend PRIVATE
   ${OpenCV_INCLUDE_DIRS}
 )
 
+# The Monado Basalt fork exports only the VIT C API from the shared `basalt`
+# target. The estimator classes used here live in the static `basalt_internal`.
+if(TARGET basalt_internal)
+  set(XR_BASALT_LIBRARY_TARGET basalt_internal)
+else()
+  set(XR_BASALT_LIBRARY_TARGET basalt)
+endif()
+
+if(TARGET nlohmann_json::nlohmann_json)
+  set(XR_BASALT_JSON_TARGET nlohmann_json::nlohmann_json)
+elseif(TARGET nlohmann::json)
+  set(XR_BASALT_JSON_TARGET nlohmann::json)
+else()
+  find_package(nlohmann_json REQUIRED)
+  set(XR_BASALT_JSON_TARGET nlohmann_json::nlohmann_json)
+endif()
+
 target_link_libraries(capture_basalt_backend PRIVATE
-  basalt
-  nlohmann_json::nlohmann_json
+  ${XR_BASALT_LIBRARY_TARGET}
+  ${XR_BASALT_JSON_TARGET}
   ${XR_BASALT_CLI_TARGET}
   ${OpenCV_LIBS}
 )
+
+if(TARGET basalt_internal)
+  target_include_directories(capture_basalt_backend PRIVATE "${CMAKE_BINARY_DIR}/include")
+  target_compile_definitions(capture_basalt_backend PRIVATE XR_BASALT_MONADO_FORK)
+endif()
 
 # The project install script copies this build-tree executable into
 # bin/backends/basalt_vio and puts libbasalt.so next to it under ./lib.
 # Use a relative runtime path so the copied binary does not depend on
 # LD_LIBRARY_PATH or an absolute build-tree location.
+if(APPLE)
+  set(XR_BASALT_RPATH "@loader_path/lib;@loader_path")
+else()
+  set(XR_BASALT_RPATH "\$ORIGIN/lib;\$ORIGIN")
+endif()
 set_target_properties(capture_basalt_backend PROPERTIES
   BUILD_WITH_INSTALL_RPATH TRUE
-  INSTALL_RPATH "\$ORIGIN/lib;\$ORIGIN"
+  INSTALL_RPATH "${XR_BASALT_RPATH}"
 )
 
 if(TARGET TBB::tbb)
@@ -72,9 +99,9 @@ target_compile_features(xr_dump_vio_config PRIVATE cxx_std_17)
 target_include_directories(xr_dump_vio_config PRIVATE
   "${XR_TRACKING_ROOT}/shared/include"
 )
-target_link_libraries(xr_dump_vio_config PRIVATE basalt)
+target_link_libraries(xr_dump_vio_config PRIVATE ${XR_BASALT_LIBRARY_TARGET})
 
 set_target_properties(xr_dump_vio_config PROPERTIES
   BUILD_WITH_INSTALL_RPATH TRUE
-  INSTALL_RPATH "\$ORIGIN/lib;\$ORIGIN"
+  INSTALL_RPATH "${XR_BASALT_RPATH}"
 )

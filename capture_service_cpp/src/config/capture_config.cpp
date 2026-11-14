@@ -656,6 +656,17 @@ void apply_yaml(const FlatYaml& y, RuntimeConfig& cfg) {
   set_float3(y, "imu.synthetic.accel_m_s2", cfg.imu.synthetic.accel_m_s2);
   set_string(y, {"imu.synthetic.timestamp_mode"}, cfg.imu.synthetic.timestamp_mode);
 
+  set_string(y, {"nreal_light.factory_config_path"}, cfg.nreal_light.factory_config_path);
+  set_bool(y, {"nreal_light.apply_factory_imu"}, cfg.nreal_light.apply_factory_imu);
+  int camera_offset_us = static_cast<int>(cfg.nreal_light.camera_timestamp_offset_us);
+  set_int(y, {"nreal_light.camera_timestamp_offset_us"}, camera_offset_us);
+  cfg.nreal_light.camera_timestamp_offset_us = camera_offset_us;
+  set_int(y, {"nreal_light.bulk_transfers"}, cfg.nreal_light.bulk_transfers);
+  set_bool(y, {"nreal_light.mcu_heartbeat"}, cfg.nreal_light.mcu_heartbeat);
+
+  if (previous_driver != cfg.imu.driver && cfg.imu.driver == "nreal_light" && !raw_enabled_explicit) {
+    cfg.imu.raw_enabled = false;
+  }
   if (previous_driver != cfg.imu.driver && cfg.imu.driver == "serial" && !raw_enabled_explicit) {
     cfg.imu.raw_enabled = false;
     cfg.imu.raw_stream_id = "imu_raw";
@@ -726,6 +737,7 @@ void validate_runtime_config(RuntimeConfig& cfg) {
   cfg.imu.serial.protocol_device_uid = trim(cfg.imu.serial.protocol_device_uid);
   cfg.profile_name = trim(cfg.profile_name);
   cfg.backend_control_file = expand_user_path(trim(cfg.backend_control_file));
+  cfg.nreal_light.factory_config_path = expand_user_path(trim(cfg.nreal_light.factory_config_path));
 
   if (!cfg.profile_name.empty()) {
     for (const unsigned char c : cfg.profile_name) {
@@ -750,7 +762,11 @@ void validate_runtime_config(RuntimeConfig& cfg) {
     if (cfg.camera.timestamp_mode != "device" && cfg.camera.timestamp_mode != "host_receive") {
       throw std::runtime_error("camera.timestamp_mode must be device or host_receive");
     }
-    if (cfg.camera.timestamp_mode == "device" &&
+    if (cfg.camera.timestamp_mode == "device" && cfg.camera.driver == "nreal_light") {
+      if (!cfg.imu.enabled || cfg.imu.driver != "nreal_light") {
+        throw std::runtime_error("Nreal Light device camera timestamps require imu.driver=nreal_light");
+      }
+    } else if (cfg.camera.timestamp_mode == "device" &&
         (cfg.camera.driver != "xreal_ultra" || !cfg.imu.enabled || cfg.imu.driver != "xreal_hid" ||
          cfg.imu.xreal_hid.timestamp_mode != "device")) {
       throw std::runtime_error("XREAL device camera timestamps require the XREAL HID IMU in device timestamp mode");
@@ -759,8 +775,10 @@ void validate_runtime_config(RuntimeConfig& cfg) {
         cfg.camera.timestamp_mode != cfg.imu.xreal_hid.timestamp_mode) {
       throw std::runtime_error("XREAL camera and IMU timestamp modes must match");
     }
-    if (cfg.camera.driver != "xreal_ultra" && cfg.camera.driver != "opencv") {
-      throw std::runtime_error("unsupported camera.driver=" + cfg.camera.driver + "; supported: xreal_ultra, opencv");
+    if (cfg.camera.driver != "xreal_ultra" && cfg.camera.driver != "opencv" &&
+        cfg.camera.driver != "nreal_light") {
+      throw std::runtime_error("unsupported camera.driver=" + cfg.camera.driver +
+                               "; supported: xreal_ultra, opencv, nreal_light");
     }
     if (cfg.camera.output_width <= 0 || cfg.camera.output_height <= 0) {
       throw std::runtime_error("camera.output width and height must be positive");
@@ -777,9 +795,13 @@ void validate_runtime_config(RuntimeConfig& cfg) {
   }
   if (cfg.imu.enabled) {
     if (cfg.imu.driver != "xreal_hid" && cfg.imu.driver != "serial" &&
-        cfg.imu.driver != "synthetic") {
-      throw std::runtime_error(
-          "unsupported imu.driver=" + cfg.imu.driver + "; supported: xreal_hid, serial, synthetic");
+        cfg.imu.driver != "synthetic" && cfg.imu.driver != "nreal_light") {
+      throw std::runtime_error("unsupported imu.driver=" + cfg.imu.driver +
+                               "; supported: xreal_hid, serial, synthetic, nreal_light");
+    }
+    if (cfg.imu.driver == "nreal_light" && (cfg.nreal_light.bulk_transfers < 1 ||
+                                            cfg.nreal_light.bulk_transfers > 16)) {
+      throw std::runtime_error("nreal_light.bulk_transfers must be in [1, 16]");
     }
     if (cfg.imu.driver == "xreal_hid" && cfg.imu.xreal_hid.read_timeout_ms <= 0) {
       throw std::runtime_error("imu.xreal_hid.read_timeout_ms must be positive");

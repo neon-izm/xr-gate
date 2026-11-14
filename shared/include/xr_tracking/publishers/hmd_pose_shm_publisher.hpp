@@ -131,6 +131,10 @@ class HmdPoseShmPublisher {
     std::string posix_name = cfg_.shm_name;
     if (posix_name.empty() || posix_name[0] != '/') posix_name = "/" + posix_name;
 
+#ifdef __APPLE__
+    // macOS rejects ftruncate on a POSIX SHM object that already has a size.
+    ::shm_unlink(posix_name.c_str());
+#endif
     fd_ = ::shm_open(posix_name.c_str(), O_CREAT | O_RDWR, 0666);
     if (fd_ < 0) {
       throw std::runtime_error("shm_open failed for " + posix_name + ": " + std::strerror(errno));

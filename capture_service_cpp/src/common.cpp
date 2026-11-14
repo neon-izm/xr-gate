@@ -102,11 +102,11 @@ void usage(const char* argv0) {
             << " [--registry PATH] [--namespace NAME] [--profile NAME] [--publish shm|tcp|shm,tcp]"
             << " [--tcp-bind HOST] [--tcp-port PORT]"
             << " [--backend-control-file PATH] [--backend-control-poll-ms MS]"
-            << " [--camera-driver xreal_ultra|opencv]"
+            << " [--camera-driver xreal_ultra|opencv|nreal_light]"
             << " [--camera-layout side_by_side_horizontal|side_by_side_vertical|interleaved_columns|dual]";
   print_platform_camera_usage(std::cerr);
   std::cerr << " [--secondary-video-device PATH] [--secondary-camera-index N]"
-            << " [--imu-driver xreal_hid|serial|synthetic] [--serial-port PORT] [--serial-baud RATE]"
+            << " [--imu-driver xreal_hid|serial|synthetic|nreal_light] [--serial-port PORT] [--serial-baud RATE]"
             << " [--no-camera] [--no-imu] [--duration SEC]\n"
             << "Default config: ~/.config/xr_tracking/capture_service_cpp/config.yaml. "
             << "If it does not exist, the built-in XREAL Ultra profile is used.\n";
