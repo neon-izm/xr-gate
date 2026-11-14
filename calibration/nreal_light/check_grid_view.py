@@ -35,6 +35,13 @@ def main() -> None:
 
     params = cv2.aruco.DetectorParameters()
     params.markerBorderBits = 2
+    # A laptop screen loses contrast at oblique angles; wider threshold windows
+    # and bit tolerance keep those tags detectable.
+    params.adaptiveThreshWinSizeMin = 5
+    params.adaptiveThreshWinSizeMax = 53
+    params.adaptiveThreshWinSizeStep = 4
+    params.errorCorrectionRate = 0.8
+    params.maxErroneousBitsInBorderRate = 0.5
     detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), params)
     client = CaptureClient.from_shm_registry(args.registry, required_streams=["camera0", "camera1"])
     start = time.monotonic()

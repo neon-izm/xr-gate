@@ -22,6 +22,7 @@ constexpr int kUvcInterface = 1;
 constexpr uint8_t kBulkEndpoint = 0x81;
 constexpr size_t kFrameQueueLimit = 4;
 constexpr size_t kImuQueueLimit = 8000;
+constexpr int kImuTransfers = 32;
 
 std::string usb_error(const std::string& what, int status) {
   std::string text = what + ": " + libusb_error_name(status);
@@ -102,7 +103,7 @@ class NrealLightMcu {
 }  // namespace
 
 struct NrealLightUsb::State {
-  struct BulkSlot {
+  struct TransferSlot {
     State* state = nullptr;
     libusb_transfer* transfer = nullptr;
     std::vector<unsigned char> buffer;
@@ -122,10 +123,10 @@ struct NrealLightUsb::State {
   bool claimed_video = false;
   bool claimed_hid = false;
 
-  std::vector<std::unique_ptr<BulkSlot>> bulks;
-  libusb_transfer* imu = nullptr;
-  std::vector<unsigned char> imu_buffer;
-  std::atomic<bool> imu_inflight{false};
+  std::vector<std::unique_ptr<TransferSlot>> bulks;
+  // Several queued reads, so a 1 kHz report is not missed while a completed
+  // transfer waits to be resubmitted.
+  std::vector<std::unique_ptr<TransferSlot>> imus_in;
 
   std::atomic<bool> running{false};
   std::atomic<bool> lost{false};
@@ -144,7 +145,9 @@ struct NrealLightUsb::State {
   uint64_t bad_bulk = 0;
 
   bool any_inflight() const {
-    if (imu_inflight.load()) return true;
+    for (const auto& slot : imus_in) {
+      if (slot->inflight.load()) return true;
+    }
     for (const auto& slot : bulks) {
       if (slot->inflight.load()) return true;
     }
@@ -266,15 +269,24 @@ struct NrealLightUsb::State {
     hid_command(kNrealLightCmdImuStream, 0x01);
     running = true;
 
-    imu_buffer.resize(static_cast<size_t>(interrupt_packet));
-    imu = libusb_alloc_transfer(0);
-    libusb_fill_interrupt_transfer(imu, handle, interrupt_in, imu_buffer.data(),
-                                   static_cast<int>(imu_buffer.size()), &State::on_imu, this, 0);
-    if (libusb_submit_transfer(imu) != 0) throw std::runtime_error("cannot submit OV580 IMU transfer");
-    imu_inflight = true;
+    for (int i = 0; i < kImuTransfers; ++i) {
+      auto slot = std::make_unique<TransferSlot>();
+      slot->state = this;
+      slot->buffer.resize(static_cast<size_t>(interrupt_packet));
+      slot->transfer = libusb_alloc_transfer(0);
+      libusb_fill_interrupt_transfer(slot->transfer, handle, interrupt_in, slot->buffer.data(),
+                                     static_cast<int>(slot->buffer.size()), &State::on_imu, slot.get(), 0);
+      if (libusb_submit_transfer(slot->transfer) != 0) {
+        libusb_free_transfer(slot->transfer);
+        break;
+      }
+      slot->inflight = true;
+      imus_in.push_back(std::move(slot));
+    }
+    if (imus_in.empty()) throw std::runtime_error("cannot submit OV580 IMU transfer");
 
     for (int i = 0; i < cfg.bulk_transfers; ++i) {
-      auto slot = std::make_unique<BulkSlot>();
+      auto slot = std::make_unique<TransferSlot>();
       slot->state = this;
       slot->buffer.resize(kNrealLightBulkSize);
       slot->transfer = libusb_alloc_transfer(0);
@@ -292,7 +304,7 @@ struct NrealLightUsb::State {
   }
 
   static void LIBUSB_CALL on_bulk(libusb_transfer* transfer) {
-    auto* slot = static_cast<BulkSlot*>(transfer->user_data);
+    auto* slot = static_cast<TransferSlot*>(transfer->user_data);
     State* state = slot->state;
     slot->inflight = false;
     const uint64_t now = steady_ns();
@@ -332,8 +344,9 @@ struct NrealLightUsb::State {
   }
 
   static void LIBUSB_CALL on_imu(libusb_transfer* transfer) {
-    auto* state = static_cast<State*>(transfer->user_data);
-    state->imu_inflight = false;
+    auto* slot = static_cast<TransferSlot*>(transfer->user_data);
+    State* state = slot->state;
+    slot->inflight = false;
     if (transfer->status == LIBUSB_TRANSFER_COMPLETED && transfer->actual_length > 0) {
       NrealLightPacket packet{{transfer->buffer, transfer->buffer + transfer->actual_length}, steady_ns()};
       {
@@ -345,7 +358,7 @@ struct NrealLightUsb::State {
     } else if (transfer->status == LIBUSB_TRANSFER_NO_DEVICE) {
       state->lost = true;
     }
-    if (state->running && !state->lost && libusb_submit_transfer(transfer) == 0) state->imu_inflight = true;
+    if (state->running && !state->lost && libusb_submit_transfer(transfer) == 0) slot->inflight = true;
   }
 
   void events() {
@@ -354,7 +367,9 @@ struct NrealLightUsb::State {
         for (auto& slot : bulks) {
           if (slot->inflight) libusb_cancel_transfer(slot->transfer);
         }
-        if (imu_inflight) libusb_cancel_transfer(imu);
+        for (auto& slot : imus_in) {
+          if (slot->inflight) libusb_cancel_transfer(slot->transfer);
+        }
       }
       timeval tv{0, 100000};
       libusb_handle_events_timeout_completed(context, &tv, nullptr);
@@ -387,8 +402,10 @@ struct NrealLightUsb::State {
       if (slot->transfer) libusb_free_transfer(slot->transfer);
     }
     bulks.clear();
-    if (imu) libusb_free_transfer(imu);
-    imu = nullptr;
+    for (auto& slot : imus_in) {
+      if (slot->transfer) libusb_free_transfer(slot->transfer);
+    }
+    imus_in.clear();
     if (handle && claimed_hid) {
       try {
         hid_command(kNrealLightCmdImuStream, 0x00);
