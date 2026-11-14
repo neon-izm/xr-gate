@@ -1011,10 +1011,17 @@ int main(int argc, char** argv) {
           continue;
         }
 
+#ifdef XR_BASALT_MONADO_FORK
+        // The fork indexes masks per camera, so they must be sized.
+        basalt::OpticalFlowInput::Ptr input(new basalt::OpticalFlowInput(2));
+        input->img_data[0] = make_basalt_image(packet->pair.cam0, image_scale);
+        input->img_data[1] = make_basalt_image(packet->pair.cam1, image_scale);
+#else
         basalt::OpticalFlowInput::Ptr input(new basalt::OpticalFlowInput);
-        input->t_ns = packet->pair.timestamp_ns;
         input->img_data.emplace_back(make_basalt_image(packet->pair.cam0, image_scale));
         input->img_data.emplace_back(make_basalt_image(packet->pair.cam1, image_scale));
+#endif
+        input->t_ns = packet->pair.timestamp_ns;
 
         std::vector<basalt::ImuData<double>::Ptr> imu_batch;
         if (use_imu) {

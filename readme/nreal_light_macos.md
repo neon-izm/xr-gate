@@ -59,9 +59,20 @@ USB devices of the glasses:
 
 Stereo frames are one 615908-byte bulk transfer: a 12-byte UVC header every
 0x8000 bytes, then 640x481 rows where even rows are the left camera, odd rows
-the right camera, and the u64 after the pixels the OV580 time in ns. Transfers
-are read into 2 MiB buffers so that a transfer that starts mid-frame ends at the
-short packet that closes the frame and the next transfer is aligned again.
+the right camera, and the u64 after the pixels the OV580 time in ns. Four
+exact-size bulk transfers stay queued. A transfer that ends with OVERFLOW,
+STALL, or ERROR is not resubmitted; clearing the halt or recommitting UVC in the
+same session made the OV580 drop off the bus.
+
+### OV580 on macOS
+
+Every libusb open and close re-enumerates the OV580, and on the tested Mac
+consecutive sessions alternate between working, timing out with no frames, and
+overflowing. The driver therefore waits up to 2.5 s for three good frames after
+the UVC commit and, if they do not arrive, closes the device and reopens it, up
+to four attempts. `start.sh` additionally restarts `capture_service_cpp` when
+it exits with an error. If the OV580 (`05a9:0680`) disappears from
+`system_profiler SPUSBDataType`, unplug and replug the glasses.
 
 IMU report 1 carries gyro in degrees/s and accel in g with their own
 multiplier and divisor. The driver publishes the OV580 IMU frame without axis
@@ -106,6 +117,19 @@ Ultra (`calibration/common/linux`), then pass the result with
 `BASALT_CALIB=/path/basalt_calib.json`. The Kalibr converter in this repository
 only handles pinhole-equi; Nreal Light lenses fit pinhole-radtan.
 
+## Measured on the tested unit
+
+M1 Mac, factory calibration, glasses resting still on a desk for 90 s:
+
+- Capture: 3000 stereo pairs at 30 Hz, 99000 IMU samples at 1 kHz, about
+  29 ms camera latency, clock drift about -5 ppm.
+- Basalt: 2701 poses over 90 s, about 30 Hz.
+- Drift: 0.13 m in position and about 3 degrees in orientation over 90 s.
+- `tools/xr_app_client.py` receives `hmd_valid=True` poses at y = 1.62 m.
+
+The drift is the main limit of the factory calibration. A Kalibr calibration
+is the next step for better tracking.
+
 ## Coordinate transform
 
 Basalt publishes `T_world_imu` in a gravity-aligned z-up world. The runtime
@@ -116,6 +140,19 @@ left camera frame (x right, y down, z forward) tilted by about 15 degrees, so
 `factory_to_basalt.py` adds a post-multiplied `orientation_offset`
 `B * R_imu_cam * diag(1, -1, -1)` that makes the runtime head follow the left
 camera. The offset depends on each unit's factory extrinsics.
+
+## Fork Basalt notes
+
+The Monado fork differs from upstream in ways the backend has to handle under
+`XR_BASALT_MONADO_FORK`:
+
+- The optical flow thread starts only on `start()`, and its destructor joins
+  that thread, so a backend reset without `start()` crashes.
+- The optical flow reads depth guesses, VIO state, and landmark bundles from
+  the VIO, so those queues are connected before `start()`.
+- `OpticalFlowInput` indexes `masks` per camera, so inputs are built with
+  `OpticalFlowInput(2)`.
+- The VIO config must contain every key of the fork's `VioConfig`.
 
 ## Files
 
