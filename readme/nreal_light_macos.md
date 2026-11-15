@@ -47,6 +47,37 @@ root. Logs go to `/tmp/xr_gate_nreal_light`.
 
 Keep the glasses still for the first second so that Basalt can align gravity.
 
+### Capture daemon
+
+To avoid the password and a fresh OV580 open on every run, install the
+capture service once as a launchd daemon:
+
+```bash
+devices/nreal_light/scripts/macos/capture_daemon.sh install   # password once
+devices/nreal_light/scripts/macos/capture_daemon.sh start     # no password
+devices/nreal_light/scripts/macos/capture_daemon.sh status
+```
+
+`install` copies `capture_service_cpp` and its config to the root-owned
+`/usr/local/libexec/xr-gate/nreal_light` and loads
+`/Library/LaunchDaemons/com.xr-gate.nreal-light-capture.plist`. launchd keeps
+the process alive while `~/.config/xr_tracking/nreal_light/capture.enabled`
+exists, and restarts it when the glasses are plugged in again. The process
+drops to the installing user after claiming USB, so `start`, `stop`, and
+`restart` run without sudo. When the daemon is installed, `start.sh` and
+`CAPTURE_ONLY=1` use it instead of `sudo`; `CAPTURE_DAEMON=0` forces the old
+path. Rerun `install` after rebuilding `capture_service_cpp` or editing the
+capture config; `status` reports a mismatch. The daemon log is
+`/Library/Logs/xr-gate-nreal-light-capture.log`. The process still loads the
+Homebrew libusb, hidapi, and OpenCV libraries while it is root, as with
+`sudo`.
+
+Leave the daemon running between measurements. Each `stop` and `start` opens
+the OV580 again, and on the tested Mac three quick cycles left it off the bus.
+A port reset, a port power cycle, and a power cycle of all ports of the
+glasses hub (`04b4:6572`, ganged power) did not bring it back; only a replug
+did.
+
 ## Device notes
 
 USB devices of the glasses:

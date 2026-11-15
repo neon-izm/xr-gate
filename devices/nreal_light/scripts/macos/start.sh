@@ -60,28 +60,43 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-rm -f "$CAPTURE_REGISTRY" "$FACTORY_PATH"
-echo "[nreal_light] capture_service_cpp needs root to detach the OV580 drivers"
-sudo -v
-# capture_service_cpp exits when the stereo stream stalls or loses frame
-# alignment. Restart it; capture_basalt_backend reconnects to the new streams.
-(
-  while true; do
-    sudo -E "$CAPTURE_BIN" --config "$CAPTURE_CONFIG" --duration "$DURATION_SEC" >>"$LOG_DIR/capture.log" 2>&1 && break
-    echo "[nreal_light] capture exited with $?; restarting" >>"$LOG_DIR/capture.log"
-    sleep 2
+CAPTURE_DAEMON_PLIST=/Library/LaunchDaemons/com.xr-gate.nreal-light-capture.plist
+if [[ "${CAPTURE_DAEMON:-auto}" != "0" && -f "$CAPTURE_DAEMON_PLIST" ]]; then
+  # The launchd daemon keeps capture running across runs; no sudo needed.
+  "$SCRIPT_DIR/capture_daemon.sh" start
+  for _ in $(seq 1 100); do
+    [[ -s "$FACTORY_PATH" ]] && break
+    sleep 0.1
   done
-) &
-pids+=("$!")
-
-for _ in $(seq 1 300); do
-  [[ -s "$CAPTURE_REGISTRY" && -s "$FACTORY_PATH" ]] && break
-  if ! kill -0 "${pids[0]}" 2>/dev/null; then
-    cat "$LOG_DIR/capture.log" >&2
-    exit 1
+  if [[ "${CAPTURE_ONLY:-0}" == "1" ]]; then
+    echo "[nreal_light] capture daemon running; streams in $CAPTURE_REGISTRY"
+    exit 0
   fi
-  sleep 0.1
-done
+else
+  rm -f "$CAPTURE_REGISTRY" "$FACTORY_PATH"
+  echo "[nreal_light] capture_service_cpp needs root to detach the OV580 drivers"
+  echo "[nreal_light] capture_daemon.sh install avoids this prompt on later runs"
+  sudo -v
+  # capture_service_cpp exits when the stereo stream stalls or loses frame
+  # alignment. Restart it; capture_basalt_backend reconnects to the new streams.
+  (
+    while true; do
+      sudo -E "$CAPTURE_BIN" --config "$CAPTURE_CONFIG" --duration "$DURATION_SEC" >>"$LOG_DIR/capture.log" 2>&1 && break
+      echo "[nreal_light] capture exited with $?; restarting" >>"$LOG_DIR/capture.log"
+      sleep 2
+    done
+  ) &
+  pids+=("$!")
+
+  for _ in $(seq 1 300); do
+    [[ -s "$CAPTURE_REGISTRY" && -s "$FACTORY_PATH" ]] && break
+    if ! kill -0 "${pids[0]}" 2>/dev/null; then
+      cat "$LOG_DIR/capture.log" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+fi
 if [[ ! -s "$CAPTURE_REGISTRY" ]]; then
   echo "[nreal_light] capture did not publish $CAPTURE_REGISTRY; see $LOG_DIR/capture.log" >&2
   exit 1
