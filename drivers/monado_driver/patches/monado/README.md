@@ -44,6 +44,19 @@ Patch scope:
   HMD/view poses
 ```
 
+The legacy builder hunk sets the shared tracking origin offset to identity. The
+static system devices helper zero-fills it, and the zero quaternion made
+`T_base_xdev` in `oxr_session_locate_views()` a zero rotation, which is the
+source of the zero quaternion below.
+
+### `0003-macos-metal-compositor.patch`
+
+macOS port of the in-process runtime, applied by
+`drivers/monado_driver/scripts/macos/build.sh` after `0001` and `0002`:
+`MTLTexture` swapchain sharing through MoltenVK, portability enumeration, a
+`CAMetalLayer` compositor target (`comp_window_macos.m`), and no
+`VK_GOOGLE_display_timing` present times. See `readme/nreal_light_macos.md`.
+
 The OXR sanitize section is intentionally part of this integration patch because it
 is an upstream Monado behavior workaround required by the `xr_tracking_runtime`
 OpenXR path on the pinned commit. Without it, `hello_xr` may fail with:

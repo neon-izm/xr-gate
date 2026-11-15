@@ -71,7 +71,7 @@ index 2d95fba..fbc23af 100644
  	// If no driver is enabled, there is no way to create a HMD
  	bool may_create_hmd = xb->driver_identifier_count > 0;
  
-@@ -127,6 +142,41 @@ legacy_open_system_impl(struct xrt_builder *xb,
+@@ -127,6 +142,43 @@ legacy_open_system_impl(struct xrt_builder *xb,
  	xrt_result_t xret;
  	int ret;
  
@@ -97,6 +97,8 @@ index 2d95fba..fbc23af 100644
 +		left->tracking_origin = origin;
 +		right->tracking_origin = origin;
 +		origin->type = XRT_TRACKING_TYPE_OTHER;
++		// The static system devices helper callocs the origin, a zero quaternion.
++		origin->initial_offset = (struct xrt_pose)XRT_POSE_IDENTITY;
 +
 +		xsysd->static_xdevs[xsysd->static_xdev_count++] = head;
 +		xsysd->static_xdevs[xsysd->static_xdev_count++] = left;

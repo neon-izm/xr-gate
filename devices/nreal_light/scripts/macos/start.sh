@@ -5,8 +5,9 @@
 #   -> capture_basalt_backend
 #   -> xr_runtime_adapter (logging adapter, optional application TCP)
 #
-# SteamVR and Monado do not run on macOS. Poses are available through
-# RUNTIME_APP_TCP=1 (JSON Lines on 127.0.0.1:45810) and the hmd_pose SHM.
+# SteamVR does not run on macOS. Poses are available through RUNTIME_APP_TCP=1
+# (JSON Lines on 127.0.0.1:45810), the hmd_pose SHM, and with
+# RUNTIME_POSE_SHM=1 to the in-process Monado runtime (run_openxr.sh).
 #
 # Environment:
 #   NREAL_CALIB_DIR      where the per-unit Basalt calibration is written
@@ -16,6 +17,7 @@
 #                        present, else the factory calibration
 #   RUNTIME_TRANSFORM    use this xr_runtime_adapter transform JSON
 #   RUNTIME_APP_TCP=1    enable the application TCP server
+#   RUNTIME_POSE_SHM=1   publish runtime_hmd_pose for the Monado OpenXR runtime
 #   BASALT_TRAJECTORY    write the Basalt trajectory CSV here
 #   DURATION_SEC         stop after this many seconds (default 0, until Ctrl+C)
 #   CAPTURE_ONLY=1       run only capture_service_cpp, for calibration recording
@@ -37,6 +39,7 @@ NREAL_CALIB_DIR="${NREAL_CALIB_DIR:-$HOME/.config/xr_tracking/nreal_light}"
 LOG_DIR="${LOG_DIR:-/tmp/xr_gate_nreal_light}"
 DURATION_SEC="${DURATION_SEC:-0}"
 RUNTIME_APP_TCP="${RUNTIME_APP_TCP:-0}"
+RUNTIME_POSE_SHM="${RUNTIME_POSE_SHM:-0}"
 
 for bin in "$CAPTURE_BIN" "$BASALT_BIN" "$ADAPTER_BIN"; do
   if [[ ! -x "$bin" ]]; then
@@ -148,9 +151,14 @@ adapter_args=(
   --registry "$TRACKING_REGISTRY"
   --tracking-transform-config "$RUNTIME_TRANSFORM"
   --origin-mode none
+  # capture_basalt_backend recreates its pose SHM when it restarts after a stall.
+  --hmd-reattach-on-stale-ms 500
   --duration "$DURATION_SEC"
   --print-every 300
 )
+if [[ "$RUNTIME_POSE_SHM" == "1" ]]; then
+  adapter_args+=(--publish-runtime-pose-shm)
+fi
 if [[ "$RUNTIME_APP_TCP" == "1" ]]; then
   adapter_args+=(--app-tcp --app-tcp-host "${RUNTIME_APP_TCP_HOST:-127.0.0.1}" --app-tcp-port "${RUNTIME_APP_TCP_PORT:-45810}")
 fi

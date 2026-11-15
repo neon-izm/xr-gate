@@ -23,6 +23,17 @@ std::string normalize_posix_shm_name(const std::string& name, const char* fallba
   return "/" + name;
 }
 
+bool shm_unlinked(const struct stat& st) {
+#ifdef __APPLE__
+  // macOS reports st_nlink 0 for every POSIX SHM object, so an unlinked
+  // segment is only detected by the stall timeout.
+  (void)st;
+  return false;
+#else
+  return st.st_nlink == 0;
+#endif
+}
+
 template <typename HeaderT, typename SlotT, typename PayloadT>
 bool read_latest_ring_payload(const uint8_t* data,
                               size_t mapped_size,
@@ -83,7 +94,7 @@ class MappedPosixShm {
       // same name. Inspect the descriptor before accessing the mapped pages,
       // including when the old sample is still fresh or sequence restarts at 1.
       struct stat current {};
-      if (fstat(fd_, &current) != 0 || current.st_nlink == 0 ||
+      if (fstat(fd_, &current) != 0 || shm_unlinked(current) ||
           current.st_size <= 0 || static_cast<size_t>(current.st_size) != mapped_size_ ||
           now - last_progress_ns_ >= kReattachAfterStallNs) {
         close_mapping();
@@ -108,7 +119,7 @@ class MappedPosixShm {
     }
 
     struct stat st {};
-    if (fstat(fd_, &st) != 0 || st.st_nlink == 0 || st.st_size <= 0) {
+    if (fstat(fd_, &st) != 0 || shm_unlinked(st) || st.st_size <= 0) {
       if (error) *error = "SHM is unavailable or not initialized: " + shm_name_;
       close_mapping();
       return false;

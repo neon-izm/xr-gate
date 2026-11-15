@@ -1,0 +1,926 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7a5b926fa..627741cb3 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -555,6 +555,9 @@ endif()
+ if(WIN32)
+ 	set(VK_USE_PLATFORM_WIN32_KHR TRUE)
+ endif()
++if(APPLE)
++	set(VK_USE_PLATFORM_METAL_EXT TRUE)
++endif()
+ if(XRT_HAVE_VULKAN AND NOT ANDROID)
+ 	set(VK_USE_PLATFORM_DISPLAY_KHR TRUE)
+ endif()
+diff --git a/src/xrt/auxiliary/util/CMakeLists.txt b/src/xrt/auxiliary/util/CMakeLists.txt
+index 77465fa20..1c9615932 100644
+--- a/src/xrt/auxiliary/util/CMakeLists.txt
++++ b/src/xrt/auxiliary/util/CMakeLists.txt
+@@ -158,6 +158,11 @@ if(ANDROID)
+ 	target_sources(aux_util PRIVATE u_android.c u_android.h)
+ endif()
+ 
++# Graphics buffer handles are CoreFoundation references on OSX.
++if(APPLE)
++	target_link_libraries(aux_util PUBLIC "-framework CoreFoundation")
++endif()
++
+ # Is basically used everywhere, unavoidable.
+ if(XRT_HAVE_SYSTEM_CJSON)
+ 	target_link_libraries(aux_util PUBLIC cJSON::cJSON)
+diff --git a/src/xrt/auxiliary/util/u_handles.c b/src/xrt/auxiliary/util/u_handles.c
+index 2196e85c0..220b4c252 100644
+--- a/src/xrt/auxiliary/util/u_handles.c
++++ b/src/xrt/auxiliary/util/u_handles.c
+@@ -93,6 +93,21 @@ ref_graphics_handle(xrt_graphics_buffer_handle_t handle)
+ 	return handle;
+ }
+ 
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++#include <CoreFoundation/CoreFoundation.h>
++
++static inline void
++release_graphics_handle(xrt_graphics_buffer_handle_t handle)
++{
++	CFRelease(handle);
++}
++
++static inline xrt_graphics_buffer_handle_t
++ref_graphics_handle(xrt_graphics_buffer_handle_t handle)
++{
++	return (xrt_graphics_buffer_handle_t)CFRetain(handle);
++}
++
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_FD)
+ #include <unistd.h>
+ 
+diff --git a/src/xrt/auxiliary/util/u_sink_converter.c b/src/xrt/auxiliary/util/u_sink_converter.c
+index a6319adfd..64f72ada0 100644
+--- a/src/xrt/auxiliary/util/u_sink_converter.c
++++ b/src/xrt/auxiliary/util/u_sink_converter.c
+@@ -353,7 +353,7 @@ from_MJPEG_to_frame(struct xrt_frame *dst_frame, size_t size, const uint8_t *dat
+ 		goto fail;
+ 	}
+ 
+-	jpeg_mem_src(&cinfo, data, size);
++	jpeg_mem_src(&cinfo, (unsigned char *)data, size);
+ 
+ 	int ret = jpeg_read_header(&cinfo, TRUE);
+ 	if (ret != JPEG_HEADER_OK) {
+diff --git a/src/xrt/auxiliary/vk/vk_bundle_init.c b/src/xrt/auxiliary/vk/vk_bundle_init.c
+index b71e812f0..bc66da8f4 100644
+--- a/src/xrt/auxiliary/vk/vk_bundle_init.c
++++ b/src/xrt/auxiliary/vk/vk_bundle_init.c
+@@ -375,6 +375,14 @@ fill_in_external_object_properties(struct vk_bundle *vk)
+ 	get_external_image_support(vk, true, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID,
+ 	                           &vk->external.depth_image_import_ahardwarebuffer,
+ 	                           &vk->external.depth_image_export_ahardwarebuffer);
++
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++	get_external_image_support(vk, false, VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT,
++	                           &vk->external.color_image_import_mtltexture,
++	                           &vk->external.color_image_export_mtltexture);
++	get_external_image_support(vk, true, VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT,
++	                           &vk->external.depth_image_import_mtltexture,
++	                           &vk->external.depth_image_export_mtltexture);
+ #endif
+ #if defined(XRT_GRAPHICS_SYNC_HANDLE_IS_FD)
+ 
+diff --git a/src/xrt/auxiliary/vk/vk_compositor_flags.c b/src/xrt/auxiliary/vk/vk_compositor_flags.c
+index 4ce0f9fcd..6365979ad 100644
+--- a/src/xrt/auxiliary/vk/vk_compositor_flags.c
++++ b/src/xrt/auxiliary/vk/vk_compositor_flags.c
+@@ -71,6 +71,8 @@ vk_cb_get_buffer_external_handle_type(struct vk_bundle *vk)
+ 	return VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_WIN32_HANDLE)
+ 	return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++	return VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT;
+ #else
+ #error "need port"
+ #endif
+@@ -221,6 +223,8 @@ vk_csci_get_image_external_handle_type(struct vk_bundle *vk, struct xrt_image_na
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_WIN32_HANDLE)
+ 	return (xin && xin->is_dxgi_handle) ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT
+ 	                                    : VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++	return VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT;
+ #else
+ #error "need port"
+ #endif
+diff --git a/src/xrt/auxiliary/vk/vk_generate_inc_files.py b/src/xrt/auxiliary/vk/vk_generate_inc_files.py
+index af61672ca..9a8450846 100644
+--- a/src/xrt/auxiliary/vk/vk_generate_inc_files.py
++++ b/src/xrt/auxiliary/vk/vk_generate_inc_files.py
+@@ -159,6 +159,8 @@ def get_device_cmds():
+         Cmd("vkImportSemaphoreFdKHR", requires=("!defined(VK_USE_PLATFORM_WIN32_KHR)",)),
+         None,
+         Cmd("vkExportMetalObjectsEXT", requires=("VK_USE_PLATFORM_METAL_EXT",)),
++        Cmd("vkGetMemoryMetalHandleEXT", requires=("VK_EXT_external_memory_metal",)),
++        Cmd("vkGetMemoryMetalHandlePropertiesEXT", requires=("VK_EXT_external_memory_metal",)),
+         None,
+         Cmd(
+             "vkGetMemoryAndroidHardwareBufferANDROID",
+@@ -327,6 +329,7 @@ DEVICE_EXTENSIONS_TO_CHECK = [
+     "VK_EXT_display_control",
+     "VK_EXT_external_memory_dma_buf",
+     "VK_EXT_external_memory_host",
++    "VK_EXT_external_memory_metal",
+     "VK_EXT_global_priority",
+     "VK_EXT_image_drm_format_modifier",
+     "VK_EXT_metal_objects",
+diff --git a/src/xrt/auxiliary/vk/vk_helpers.c b/src/xrt/auxiliary/vk/vk_helpers.c
+index 023b8dd89..c2ea60146 100644
+--- a/src/xrt/auxiliary/vk/vk_helpers.c
++++ b/src/xrt/auxiliary/vk/vk_helpers.c
+@@ -402,6 +402,15 @@ vk_create_image_from_native(struct vk_bundle *vk,
+ 		return VK_ERROR_INITIALIZATION_FAILED;
+ 	}
+ 
++#if defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++	// MoltenVK only backs the image with the imported texture when it is given at image creation.
++	VkImportMetalTextureInfoEXT import_metal_texture_info = {
++	    .sType = VK_STRUCTURE_TYPE_IMPORT_METAL_TEXTURE_INFO_EXT,
++	    .plane = VK_IMAGE_ASPECT_PLANE_0_BIT,
++	    .mtlTexture = (MTLTexture_id)image_native->handle,
++	};
++#endif
++
+ 	VkImageCreateFlags image_create_flags = 0;
+ 	// Set the image create mutable flag if usage mutable is given.
+ 	const bool has_mutable_usage = (info->bits & XRT_SWAPCHAIN_USAGE_MUTABLE_FORMAT) != 0;
+@@ -438,6 +447,11 @@ vk_create_image_from_native(struct vk_bundle *vk,
+ 	}
+ #endif
+ 
++#if defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++	import_metal_texture_info.pNext = external_memory_image_create_info.pNext;
++	external_memory_image_create_info.pNext = &import_metal_texture_info;
++#endif
++
+ 	// In
+ 	VkImageCreateInfo vk_info = {
+ 	    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+@@ -502,6 +516,13 @@ vk_create_image_from_native(struct vk_bundle *vk,
+ 	};
+ 
+ 	// TODO memoryTypeBits from VkMemoryWin32HandlePropertiesKHR
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++	VkImportMemoryMetalHandleInfoEXT import_memory_info = {
++	    .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_METAL_HANDLE_INFO_EXT,
++	    .pNext = NULL,
++	    .handleType = handle_type,
++	    .handle = image_native->handle,
++	};
+ #else
+ #error "need port"
+ #endif
+@@ -646,6 +667,30 @@ get_device_memory_handle(struct vk_bundle *vk, VkDeviceMemory device_memory, xrt
+ 
+ 	return ret;
+ }
++
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++
++static VkResult
++get_device_memory_handle(struct vk_bundle *vk, VkDeviceMemory device_memory, xrt_graphics_buffer_handle_t *out_handle)
++{
++	VkMemoryGetMetalHandleInfoEXT metal_info = {
++	    .sType = VK_STRUCTURE_TYPE_MEMORY_GET_METAL_HANDLE_INFO_EXT,
++	    .pNext = NULL,
++	    .memory = device_memory,
++	    .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT,
++	};
++
++	void *handle = NULL;
++	VkResult ret = vk->vkGetMemoryMetalHandleEXT(vk->device, &metal_info, &handle);
++	if (ret != VK_SUCCESS) {
++		return ret;
++	}
++
++	// The returned texture is owned by the device memory, the caller gets its own reference.
++	*out_handle = u_graphics_buffer_ref(handle);
++
++	return ret;
++}
+ #else
+ #error "Needs port"
+ #endif
+diff --git a/src/xrt/auxiliary/vk/vk_helpers.h b/src/xrt/auxiliary/vk/vk_helpers.h
+index cd609747e..a9882c568 100644
+--- a/src/xrt/auxiliary/vk/vk_helpers.h
++++ b/src/xrt/auxiliary/vk/vk_helpers.h
+@@ -155,6 +155,12 @@ struct vk_bundle
+ 		bool color_image_export_ahardwarebuffer;
+ 		bool depth_image_import_ahardwarebuffer;
+ 		bool depth_image_export_ahardwarebuffer;
++
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++		bool color_image_import_mtltexture;
++		bool color_image_export_mtltexture;
++		bool depth_image_import_mtltexture;
++		bool depth_image_export_mtltexture;
+ #endif
+ 
+ #if defined(XRT_GRAPHICS_SYNC_HANDLE_IS_FD)
+diff --git a/src/xrt/auxiliary/vk/vk_image_allocator.c b/src/xrt/auxiliary/vk/vk_image_allocator.c
+index c656a9206..a383cee5a 100644
+--- a/src/xrt/auxiliary/vk/vk_image_allocator.c
++++ b/src/xrt/auxiliary/vk/vk_image_allocator.c
+@@ -62,6 +62,8 @@ get_image_memory_handle_type(void)
+ 	return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT_KHR;
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_FD)
+ 	return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++	return VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT;
+ #else
+ #error "need port"
+ #endif
+diff --git a/src/xrt/auxiliary/vk/vk_print.c b/src/xrt/auxiliary/vk/vk_print.c
+index a26af6b9d..16dd33c91 100644
+--- a/src/xrt/auxiliary/vk/vk_print.c
++++ b/src/xrt/auxiliary/vk/vk_print.c
+@@ -209,6 +209,19 @@ vk_print_external_handles_info(struct vk_bundle *vk, enum u_logging_level log_le
+ 	          vk->external.depth_image_export_ahardwarebuffer ? "true" : "false"      //
+ 	);                                                                                //
+ 
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++
++	U_LOG_IFL(log_level, vk->log_level,                                               //
++	          "Supported images:"                                                     //
++	          "\n\t%s:\n\t\tcolor import=%s export=%s\n\t\tdepth import=%s export=%s" //
++	          ,                                                                       //
++	          "VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT",                    //
++	          vk->external.color_image_import_mtltexture ? "true" : "false",          //
++	          vk->external.color_image_export_mtltexture ? "true" : "false",          //
++	          vk->external.depth_image_import_mtltexture ? "true" : "false",          //
++	          vk->external.depth_image_export_mtltexture ? "true" : "false"           //
++	);                                                                                //
++
+ #endif
+ 
+ #if defined(XRT_GRAPHICS_SYNC_HANDLE_IS_FD)
+diff --git a/src/xrt/compositor/client/comp_vk_glue.c b/src/xrt/compositor/client/comp_vk_glue.c
+index 783e5164d..3ace95367 100644
+--- a/src/xrt/compositor/client/comp_vk_glue.c
++++ b/src/xrt/compositor/client/comp_vk_glue.c
+@@ -42,6 +42,9 @@ const char *xrt_gfx_vk_device_extensions = VK_KHR_DEDICATED_ALLOCATION_EXTENSION
+ 
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_WIN32_HANDLE)
+     " " VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++    " " VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME " " VK_EXT_METAL_OBJECTS_EXTENSION_NAME
++    " VK_KHR_portability_subset"
+ #else
+ #error "Need port!"
+ #endif
+diff --git a/src/xrt/compositor/main/CMakeLists.txt b/src/xrt/compositor/main/CMakeLists.txt
+index 50225e945..f72c412eb 100644
+--- a/src/xrt/compositor/main/CMakeLists.txt
++++ b/src/xrt/compositor/main/CMakeLists.txt
+@@ -55,6 +55,10 @@ endif()
+ if(WIN32)
+ 	target_sources(comp_main PRIVATE comp_window_mswin.c)
+ endif()
++if(APPLE)
++	target_sources(comp_main PRIVATE comp_window_macos.m)
++	target_link_libraries(comp_main PRIVATE "-framework AppKit" "-framework QuartzCore")
++endif()
+ if(VK_USE_PLATFORM_DISPLAY_KHR)
+ 	target_sources(comp_main PRIVATE comp_window_vk_display.c)
+ endif()
+diff --git a/src/xrt/compositor/main/comp_compositor.c b/src/xrt/compositor/main/comp_compositor.c
+index 78fd4451b..f0fa959fc 100644
+--- a/src/xrt/compositor/main/comp_compositor.c
++++ b/src/xrt/compositor/main/comp_compositor.c
+@@ -529,6 +529,9 @@ static const char *optional_instance_extensions[] = {
+ #if defined VK_EXT_debug_utils && !defined NDEBUG
+     VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+ #endif
++#if defined(XRT_OS_OSX) && defined(VK_KHR_portability_enumeration)
++    VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
++#endif
+ };
+ 
+ // Note: Keep synchronized with comp_vk_glue - we should have everything they
+@@ -554,6 +557,10 @@ static const char *required_device_extensions[] = {
+ 
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_WIN32_HANDLE)
+     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++    VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME,
++    VK_EXT_METAL_OBJECTS_EXTENSION_NAME,
++    "VK_KHR_portability_subset",
+ 
+ #else
+ #error "Need port!"
+@@ -806,6 +813,9 @@ const struct comp_target_factory *ctfs[] = {
+ #ifdef XRT_OS_WINDOWS
+     &comp_target_factory_mswin,
+ #endif
++#ifdef VK_USE_PLATFORM_METAL_EXT
++    &comp_target_factory_macos,
++#endif
+ #ifdef VK_USE_PLATFORM_XLIB_XRANDR_EXT
+     &comp_target_factory_direct_nvidia,
+ #endif
+diff --git a/src/xrt/compositor/main/comp_target_swapchain.c b/src/xrt/compositor/main/comp_target_swapchain.c
+index c905c6d21..d7190ce1b 100644
+--- a/src/xrt/compositor/main/comp_target_swapchain.c
++++ b/src/xrt/compositor/main/comp_target_swapchain.c
+@@ -909,7 +909,14 @@ comp_target_swapchain_present(struct comp_target *ct,
+ 	    .pTimes = &times,
+ 	};
+ 
+-	if (vk->has_GOOGLE_display_timing) {
++#ifdef XRT_OS_OSX
++	// MoltenVK reads desiredPresentTime as mach_absolute_time, which excludes sleep, while
++	// os_monotonic_get_ns is CLOCK_MONOTONIC, which includes it: presents would land in the future.
++	const bool use_present_times = false;
++#else
++	const bool use_present_times = vk->has_GOOGLE_display_timing;
++#endif
++	if (use_present_times) {
+ 		vk_append_to_pnext_chain((VkBaseInStructure *)&present_info, (VkBaseInStructure *)&timings);
+ 	}
+ #endif
+diff --git a/src/xrt/compositor/main/comp_window.h b/src/xrt/compositor/main/comp_window.h
+index eb41c3c36..cfd44a24a 100644
+--- a/src/xrt/compositor/main/comp_window.h
++++ b/src/xrt/compositor/main/comp_window.h
+@@ -34,6 +34,21 @@ extern "C" {
+  */
+ extern const struct comp_target_factory comp_target_factory_debug_image;
+ 
++#ifdef VK_USE_PLATFORM_METAL_EXT
++
++/*!
++ * Create a macOS window backed by a CAMetalLayer.
++ *
++ * @ingroup comp_main
++ * @public @memberof comp_window_macos
++ */
++struct comp_target *
++comp_window_macos_create(struct comp_compositor *c);
++
++extern const struct comp_target_factory comp_target_factory_macos;
++
++#endif // VK_USE_PLATFORM_METAL_EXT
++
+ #ifdef VK_USE_PLATFORM_XCB_KHR
+ 
+ /*!
+diff --git a/src/xrt/compositor/main/comp_window_macos.m b/src/xrt/compositor/main/comp_window_macos.m
+new file mode 100644
+index 000000000..5ddacde68
+--- /dev/null
++++ b/src/xrt/compositor/main/comp_window_macos.m
+@@ -0,0 +1,345 @@
++// Copyright 2026, xr-gate contributors.
++// SPDX-License-Identifier: BSL-1.0
++/*!
++ * @file
++ * @brief  macOS window code, an NSWindow backed by a CAMetalLayer.
++ * @ingroup comp_main
++ */
++
++#import <AppKit/AppKit.h>
++#import <QuartzCore/QuartzCore.h>
++
++#include "util/u_debug.h"
++#include "util/u_misc.h"
++#include "xrt/xrt_compiler.h"
++#include "main/comp_window.h"
++
++#include <stdlib.h>
++#include <string.h>
++
++
++/*
++ *
++ * Private structs.
++ *
++ */
++
++/*!
++ * A macOS window.
++ *
++ * @implements comp_target_swapchain
++ */
++struct comp_window_macos
++{
++	struct comp_target_swapchain base;
++
++	NSWindow *window;
++	CAMetalLayer *layer;
++};
++
++// Index into [NSScreen screens], or a case-insensitive substring of localizedName.
++DEBUG_GET_ONCE_OPTION(macos_screen, "XRT_COMPOSITOR_MACOS_SCREEN", NULL)
++
++
++/*
++ *
++ * Functions.
++ *
++ */
++
++static inline struct vk_bundle *
++get_vk(struct comp_window_macos *cwm)
++{
++	return &cwm->base.base.c->base.vk;
++}
++
++static void
++run_on_main_thread(void (^block)(void))
++{
++	if ([NSThread isMainThread]) {
++		block();
++	} else {
++		dispatch_sync(dispatch_get_main_queue(), block);
++	}
++}
++
++static NSScreen *
++find_screen(struct comp_compositor *c)
++{
++	const char *wanted = debug_get_option_macos_screen();
++	if (wanted == NULL || wanted[0] == '\0') {
++		return nil;
++	}
++
++	NSArray<NSScreen *> *screens = [NSScreen screens];
++
++	char *end = NULL;
++	long index = strtol(wanted, &end, 10);
++	if (end != wanted && *end == '\0') {
++		if (index >= 0 && (NSUInteger)index < screens.count) {
++			return screens[(NSUInteger)index];
++		}
++		COMP_ERROR(c, "XRT_COMPOSITOR_MACOS_SCREEN=%s out of range, %u screens", wanted,
++		           (unsigned)screens.count);
++		return nil;
++	}
++
++	NSString *needle = [NSString stringWithUTF8String:wanted];
++	for (NSScreen *screen in screens) {
++		if ([screen.localizedName rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound) {
++			return screen;
++		}
++	}
++
++	COMP_ERROR(c, "No screen matching XRT_COMPOSITOR_MACOS_SCREEN=%s", wanted);
++	return nil;
++}
++
++static void
++log_screens(struct comp_compositor *c)
++{
++	NSArray<NSScreen *> *screens = [NSScreen screens];
++	for (NSUInteger i = 0; i < screens.count; i++) {
++		NSScreen *screen = screens[i];
++		NSRect frame = screen.frame;
++		COMP_INFO(c, "Screen %u: '%s' %.0fx%.0f at %.0f,%.0f scale %.1f", (unsigned)i,
++		          screen.localizedName.UTF8String, frame.size.width, frame.size.height, frame.origin.x,
++		          frame.origin.y, screen.backingScaleFactor);
++	}
++}
++
++// OpenXR apps usually don't run an AppKit event loop, without one the window is never displayed.
++static void
++pump_events(double seconds)
++{
++	NSDate *until = [NSDate dateWithTimeIntervalSinceNow:seconds];
++	for (;;) {
++		NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny
++		                                    untilDate:until
++		                                       inMode:NSDefaultRunLoopMode
++		                                      dequeue:YES];
++		if (event == nil) {
++			break;
++		}
++		[NSApp sendEvent:event];
++	}
++}
++
++static bool
++create_window(struct comp_window_macos *cwm)
++{
++	struct comp_target *ct = &cwm->base.base;
++	struct comp_compositor *c = ct->c;
++
++	[NSApplication sharedApplication];
++	[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
++	[NSApp finishLaunching];
++
++	log_screens(c);
++
++	NSScreen *screen = find_screen(c);
++	NSRect frame;
++	NSWindowStyleMask style;
++	CGFloat scale;
++	if (screen != nil) {
++		frame = screen.frame;
++		style = NSWindowStyleMaskBorderless;
++		scale = screen.backingScaleFactor;
++		COMP_INFO(c, "Covering screen '%s'", screen.localizedName.UTF8String);
++	} else {
++		frame = NSMakeRect(100, 100, ct->width, ct->height);
++		style = NSWindowStyleMaskTitled | NSWindowStyleMaskMiniaturizable;
++		scale = 1.0;
++	}
++
++	cwm->window = [[NSWindow alloc] initWithContentRect:frame
++	                                          styleMask:style
++	                                            backing:NSBackingStoreBuffered
++	                                              defer:NO
++	                                             screen:screen];
++	if (cwm->window == nil) {
++		COMP_ERROR(c, "Failed to create NSWindow");
++		return false;
++	}
++	[cwm->window setReleasedWhenClosed:NO];
++	if (screen != nil) {
++		[cwm->window setFrame:frame display:NO];
++		[cwm->window setLevel:NSMainMenuWindowLevel + 1];
++		[cwm->window setHidesOnDeactivate:NO];
++	}
++
++	cwm->layer = [[CAMetalLayer alloc] init];
++	cwm->layer.contentsScale = scale;
++	cwm->layer.drawableSize = CGSizeMake(frame.size.width * scale, frame.size.height * scale);
++	cwm->layer.opaque = YES;
++
++	// Setting the layer before wantsLayer makes this a layer-hosting view, AppKit leaves its contents alone.
++	NSView *view = cwm->window.contentView;
++	view.layer = cwm->layer;
++	view.wantsLayer = YES;
++
++	ct->width = (uint32_t)(frame.size.width * scale);
++	ct->height = (uint32_t)(frame.size.height * scale);
++
++	[cwm->window makeKeyAndOrderFront:nil];
++	[NSApp activateIgnoringOtherApps:YES];
++	[CATransaction flush];
++	pump_events(0.25);
++
++	COMP_INFO(c, "Window %ux%u pixels", ct->width, ct->height);
++
++	return true;
++}
++
++static void
++comp_window_macos_destroy(struct comp_target *ct)
++{
++	struct comp_window_macos *cwm = (struct comp_window_macos *)ct;
++
++	comp_target_swapchain_cleanup(&cwm->base);
++
++	NSWindow *window = cwm->window;
++	CAMetalLayer *layer = cwm->layer;
++	cwm->window = nil;
++	cwm->layer = nil;
++	if (window != nil || layer != nil) {
++		run_on_main_thread(^{
++		  [window orderOut:nil];
++		  [window release];
++		  [layer release];
++		});
++	}
++
++	free(ct);
++}
++
++static void
++comp_window_macos_update_window_title(struct comp_target *ct, const char *title)
++{
++	struct comp_window_macos *cwm = (struct comp_window_macos *)ct;
++	if (cwm->window == nil || title == NULL) {
++		return;
++	}
++
++	NSString *str = [NSString stringWithUTF8String:title];
++	NSWindow *window = cwm->window;
++	dispatch_async(dispatch_get_main_queue(), ^{
++	  [window setTitle:str];
++	});
++}
++
++static bool
++comp_window_macos_init(struct comp_target *ct)
++{
++	struct comp_window_macos *cwm = (struct comp_window_macos *)ct;
++
++	ct->width = 1920;
++	ct->height = 1080;
++
++	__block bool ok = false;
++	run_on_main_thread(^{
++	  @autoreleasepool {
++		  ok = create_window(cwm);
++	  }
++	});
++
++	return ok;
++}
++
++static bool
++comp_window_macos_init_swapchain(struct comp_target *ct, uint32_t width, uint32_t height)
++{
++	struct comp_window_macos *cwm = (struct comp_window_macos *)ct;
++	struct vk_bundle *vk = get_vk(cwm);
++
++	VkMetalSurfaceCreateInfoEXT surface_info = {
++	    .sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT,
++	    .pLayer = cwm->layer,
++	};
++
++	VkSurfaceKHR surface = VK_NULL_HANDLE;
++	VkResult ret = vk->vkCreateMetalSurfaceEXT(vk->instance, &surface_info, NULL, &surface);
++	if (ret != VK_SUCCESS) {
++		COMP_ERROR(ct->c, "vkCreateMetalSurfaceEXT: %s", vk_result_string(ret));
++		return false;
++	}
++
++	VK_NAME_SURFACE(vk, surface, "comp_window_macos surface");
++	cwm->base.surface.handle = surface;
++
++	return true;
++}
++
++static void
++comp_window_macos_flush(struct comp_target *ct)
++{
++	(void)ct;
++}
++
++struct comp_target *
++comp_window_macos_create(struct comp_compositor *c)
++{
++	struct comp_window_macos *w = U_TYPED_CALLOC(struct comp_window_macos);
++
++	comp_target_swapchain_init_and_set_fnptrs(&w->base, COMP_TARGET_FORCE_FAKE_DISPLAY_TIMING);
++
++	w->base.base.name = "macOS";
++	w->base.display = VK_NULL_HANDLE;
++	w->base.base.destroy = comp_window_macos_destroy;
++	w->base.base.flush = comp_window_macos_flush;
++	w->base.base.init_pre_vulkan = comp_window_macos_init;
++	w->base.base.init_post_vulkan = comp_window_macos_init_swapchain;
++	w->base.base.set_title = comp_window_macos_update_window_title;
++	w->base.base.c = c;
++
++	return &w->base.base;
++}
++
++
++/*
++ *
++ * Factory
++ *
++ */
++
++static const char *instance_extensions[] = {
++    VK_KHR_SURFACE_EXTENSION_NAME,
++    VK_EXT_METAL_SURFACE_EXTENSION_NAME,
++};
++
++static bool
++detect(const struct comp_target_factory *ctf, struct comp_compositor *c)
++{
++	return false;
++}
++
++static bool
++create_target(const struct comp_target_factory *ctf, struct comp_compositor *c, struct comp_target **out_ct)
++{
++	struct comp_target *ct = comp_window_macos_create(c);
++	if (ct == NULL) {
++		return false;
++	}
++
++	*out_ct = ct;
++
++	return true;
++}
++
++/*
++ * Not deferred: AppKit windows must be created on the main thread, and creating the
++ * system compositor happens on the application thread, deferred creation does not.
++ */
++const struct comp_target_factory comp_target_factory_macos = {
++    .name = "macOS window",
++    .identifier = "macos",
++    .requires_vulkan_for_create = false,
++    .is_deferred = false,
++    .required_instance_version = 0,
++    .required_instance_extensions = instance_extensions,
++    .required_instance_extension_count = ARRAY_SIZE(instance_extensions),
++    .optional_device_extensions = NULL,
++    .optional_device_extension_count = 0,
++    .detect = detect,
++    .create_target = create_target,
++};
+diff --git a/src/xrt/compositor/null/null_compositor.c b/src/xrt/compositor/null/null_compositor.c
+index 48557baed..6b4babcc5 100644
+--- a/src/xrt/compositor/null/null_compositor.c
++++ b/src/xrt/compositor/null/null_compositor.c
+@@ -91,6 +91,10 @@ static const char *required_device_extensions[] = {
+ 
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_WIN32_HANDLE)
+     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++    VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME,
++    VK_EXT_METAL_OBJECTS_EXTENSION_NAME,
++    "VK_KHR_portability_subset",
+ 
+ #else
+ #error "Need port!"
+diff --git a/src/xrt/compositor/util/comp_vulkan.c b/src/xrt/compositor/util/comp_vulkan.c
+index b62b33f20..0129becb2 100644
+--- a/src/xrt/compositor/util/comp_vulkan.c
++++ b/src/xrt/compositor/util/comp_vulkan.c
+@@ -221,6 +221,13 @@ create_instance(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_arg
+ 	    .ppEnabledExtensionNames = u_extension_list_get_data(instance_ext_list),
+ 	};
+ 
++#ifdef VK_KHR_portability_enumeration
++	// Needed to enumerate non-conformant implementations like MoltenVK.
++	if (u_extension_list_contains(instance_ext_list, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
++		instance_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
++	}
++#endif
++
+ 	ret = vk->vkCreateInstance(&instance_info, NULL, &vk->instance);
+ 	if (ret != VK_SUCCESS) {
+ 		VK_ERROR_RET(vk, "vkCreateInstance", "Failed to create Vulkan instance", ret);
+diff --git a/src/xrt/include/xrt/xrt_config_vulkan.h.cmake_in b/src/xrt/include/xrt/xrt_config_vulkan.h.cmake_in
+index d9bbf959a..46dcaa6fa 100644
+--- a/src/xrt/include/xrt/xrt_config_vulkan.h.cmake_in
++++ b/src/xrt/include/xrt/xrt_config_vulkan.h.cmake_in
+@@ -14,4 +14,5 @@
+ #cmakedefine VK_USE_PLATFORM_XCB_KHR
+ #cmakedefine VK_USE_PLATFORM_XLIB_XRANDR_EXT
+ #cmakedefine VK_USE_PLATFORM_WIN32_KHR
++#cmakedefine VK_USE_PLATFORM_METAL_EXT
+ #cmakedefine VK_USE_PLATFORM_DISPLAY_KHR
+diff --git a/src/xrt/include/xrt/xrt_handles.h b/src/xrt/include/xrt/xrt_handles.h
+index 3657498cd..ee85bea74 100644
+--- a/src/xrt/include/xrt/xrt_handles.h
++++ b/src/xrt/include/xrt/xrt_handles.h
+@@ -236,18 +236,58 @@ xrt_graphics_buffer_is_valid(xrt_graphics_buffer_handle_t handle)
+  */
+ #define XRT_GRAPHICS_BUFFER_HANDLE_INVALID NULL
+ 
+-#elif defined(XRT_OS_ANDROID) && !defined(XRT_OS_ANDROID_USE_AHB) || defined(XRT_OS_LINUX) || defined(XRT_OS_OSX)
++#elif defined(XRT_OS_OSX)
+ 
+ /*!
+  * The type underlying buffers shared between compositor clients and the main
+  * compositor.
+  *
+- * On Linux, this is a file descriptor.
++ * On OSX, this is a retained `id<MTLTexture>` (a CoreFoundation reference),
++ * exported and imported through VK_EXT_external_memory_metal. It is only
++ * valid inside one process, so it works with the in-process compositor only.
++ */
++typedef void *xrt_graphics_buffer_handle_t;
++
++/*!
++ * Defined to allow detection of the underlying type.
++ *
++ * @relates xrt_graphics_buffer_handle_t
++ */
++#define XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE 1
++
++/*!
++ * Defined to indicate that the graphics buffer has a reference added by the import into Vulkan.
+  *
+- * We selected the graphics handle to be FDs on OSX because that allowed the
+- * code to compile, but it's probably not what we want to actually use on OSX.
+- * So we will need to change that down the line, as it looks like OSX uses byte
+- * only arrays to share MTLTextures.
++ * @relates xrt_graphics_buffer_handle_t
++ * @see XRT_GRAPHICS_BUFFER_HANDLE_CONSUMED_BY_VULKAN_IMPORT
++ */
++#define XRT_GRAPHICS_BUFFER_HANDLE_REFERENCE_ADDED_BY_VULKAN_IMPORT 1
++
++/*!
++ * Check whether a graphics buffer handle is valid.
++ *
++ * @public @memberof xrt_graphics_buffer_handle_t
++ */
++static inline bool
++xrt_graphics_buffer_is_valid(xrt_graphics_buffer_handle_t handle)
++{
++	return handle != NULL;
++}
++
++/*!
++ * An invalid value for a graphics buffer.
++ *
++ * @relates xrt_graphics_buffer_handle_t
++ */
++#define XRT_GRAPHICS_BUFFER_HANDLE_INVALID NULL
++
++#elif defined(XRT_OS_ANDROID) && !defined(XRT_OS_ANDROID_USE_AHB) || defined(XRT_OS_LINUX)
++
++/*!
++ * The type underlying buffers shared between compositor clients and the main
++ * compositor.
++ *
++ * On Linux, this is a file descriptor.
+  */
+ typedef int xrt_graphics_buffer_handle_t;
+ 
+diff --git a/src/xrt/ipc/shared/ipc_message_channel_unix.c b/src/xrt/ipc/shared/ipc_message_channel_unix.c
+index b7a4824ee..96858c39f 100644
+--- a/src/xrt/ipc/shared/ipc_message_channel_unix.c
++++ b/src/xrt/ipc/shared/ipc_message_channel_unix.c
+@@ -336,6 +336,34 @@ ipc_send_handles_graphics_buffer(struct ipc_message_channel *imc,
+ 	return ipc_send_fds(imc, data, size, handles, handle_count);
+ }
+ 
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++
++/*
++ *
++ * Metal textures are process local, there is no transport for them.
++ *
++ */
++
++xrt_result_t
++ipc_receive_handles_graphics_buffer(struct ipc_message_channel *imc,
++                                    void *out_data,
++                                    size_t size,
++                                    xrt_graphics_buffer_handle_t *out_handles,
++                                    uint32_t handle_count)
++{
++	return XRT_ERROR_IPC_FAILURE;
++}
++
++xrt_result_t
++ipc_send_handles_graphics_buffer(struct ipc_message_channel *imc,
++                                 const void *data,
++                                 size_t size,
++                                 const xrt_graphics_buffer_handle_t *handles,
++                                 uint32_t handle_count)
++{
++	return XRT_ERROR_IPC_FAILURE;
++}
++
+ #else
+ #error "Need port to transport these graphics buffers"
+ #endif
+diff --git a/src/xrt/state_trackers/oxr/oxr_vulkan.c b/src/xrt/state_trackers/oxr/oxr_vulkan.c
+index 71244264e..d1c308e0c 100644
+--- a/src/xrt/state_trackers/oxr/oxr_vulkan.c
++++ b/src/xrt/state_trackers/oxr/oxr_vulkan.c
+@@ -115,6 +115,9 @@ static const char *optional_vk_instance_extensions[] = {
+ #if defined(VK_EXT_debug_utils)
+     VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+ #endif
++#if defined(XRT_OS_OSX) && defined(VK_KHR_portability_enumeration)
++    VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
++#endif
+ };
+ 
+ // The device extensions do vary by platform, but in a very regular way.
+@@ -140,6 +143,10 @@ static const char *required_vk_device_extensions[] = {
+ 
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_WIN32_HANDLE)
+     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++    VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME,
++    VK_EXT_METAL_OBJECTS_EXTENSION_NAME,
++    "VK_KHR_portability_subset",
+ #else
+ #error "Need port!"
+ #endif
+@@ -282,6 +289,11 @@ oxr_vk_create_vulkan_instance(struct oxr_logger *log,
+ 	VkInstanceCreateInfo modified_info = *createInfo->vulkanCreateInfo;
+ 	modified_info.ppEnabledExtensionNames = u_extension_list_get_data(instance_ext_list);
+ 	modified_info.enabledExtensionCount = u_extension_list_get_size(instance_ext_list);
++#ifdef VK_KHR_portability_enumeration
++	if (u_extension_list_contains(instance_ext_list, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
++		modified_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
++	}
++#endif
+ 
+ 	*vulkanResult = loaded_CreateInstance(&modified_info, createInfo->vulkanAllocator, vulkanInstance);
+ 
+diff --git a/tests/tests_comp_client_vulkan.cpp b/tests/tests_comp_client_vulkan.cpp
+index 0193fe284..f73925862 100644
+--- a/tests/tests_comp_client_vulkan.cpp
++++ b/tests/tests_comp_client_vulkan.cpp
+@@ -68,6 +68,10 @@ static const char *required_device_extensions[] = {
+ #elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_WIN32_HANDLE)
+     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+ 
++#elif defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_METAL_TEXTURE)
++    VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME,
++    VK_EXT_METAL_OBJECTS_EXTENSION_NAME,
++
+ #else
+ #error "Need port!"
+ #endif

@@ -11,9 +11,9 @@ capture_service_cpp (libusb nreal_light driver, 30 Hz stereo 640x480 + 1 kHz IMU
   -> xr_runtime_adapter (logging adapter, application TCP JSON Lines)
 ```
 
-SteamVR has no macOS build and Monado does not run on macOS, so this branch
-stops at the runtime adapter. Applications read the head pose from the
-application TCP server (`RUNTIME_APP_TCP=1`, see
+SteamVR has no macOS build. OpenXR applications run on a patched Monado that
+loads into the application process, see [OpenXR](#openxr). Other applications
+read the head pose from the application TCP server (`RUNTIME_APP_TCP=1`, see
 [application_network_api.md](../runtime_adapters/xr_runtime_adapter/docs/application_network_api.md))
 or from the `hmd_pose` SHM stream.
 
@@ -77,6 +77,86 @@ the OV580 again, and on the tested Mac three quick cycles left it off the bus.
 A port reset, a port power cycle, and a power cycle of all ports of the
 glasses hub (`04b4:6572`, ganged power) did not bring it back; only a replug
 did.
+
+## OpenXR
+
+```bash
+brew install molten-vk vulkan-loader vulkan-headers glslang shaderc
+drivers/monado_driver/scripts/macos/build.sh
+devices/nreal_light/scripts/macos/capture_daemon.sh install   # after rebuilding capture
+devices/nreal_light/scripts/macos/run_openxr.sh               # hello_xr -G Vulkan2
+devices/nreal_light/scripts/macos/run_openxr.sh /path/to/app [args]
+```
+
+`drivers/monado_driver/scripts/macos/build.sh` resets `third_party/monado_driver`
+to the pinned Monado commit, applies `drivers/monado_driver/patches/monado/0001`
+to `0003`, copies the `xr_tracking_runtime` driver, and builds only the
+`openxr_monado` target with `XRT_FEATURE_SERVICE=OFF`. `monado-service` and the
+IPC client use epoll and are not ported, so the runtime and its compositor run
+inside the application. The runtime manifest is
+`third_party/monado_driver/build/macos/openxr_monado-dev.json`.
+
+`run_openxr.sh` sets the glasses to 3840x1080 side by side, starts `start.sh`
+with `RUNTIME_POSE_SHM=1` so that the adapter publishes `runtime_hmd_pose`,
+exports the display geometry from the factory blob with
+`calibration/nreal_light/factory_display_env.py`, and runs the application
+with `XR_TRACKING_RUNTIME_ENABLE=1` and `XRT_COMPOSITOR_MACOS_SCREEN=Light`.
+Without `XR_TRACKING_RUNTIME_ENABLE=1` Monado uses its simulated HMD.
+
+Vulkan applications must use `XR_KHR_vulkan_enable2` (hello_xr `-G Vulkan2`),
+so that the runtime creates the `VkInstance`. MoltenVK only enumerates with
+`VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`, which the runtime adds.
+
+Patch `0003-macos-metal-compositor.patch`:
+
+- Swapchain images are shared between the application and compositor
+  `VkDevice`s as `MTLTexture` handles (`VK_EXT_external_memory_metal`). The
+  importing image must also chain `VkImportMetalTextureInfoEXT`
+  (`VK_EXT_metal_objects`), otherwise it is not backed by the shared texture.
+- `comp_window_macos.m` is a compositor target with a `CAMetalLayer` window.
+  `XRT_COMPOSITOR_MACOS_SCREEN` takes an `NSScreen` index or a name substring
+  and covers that screen borderless; without it the window is 1920x1080 on the
+  main screen.
+- `VK_GOOGLE_display_timing` present times are off on macOS. MoltenVK reads
+  them as `mach_absolute_time`, which excludes sleep, while Monado uses
+  `CLOCK_MONOTONIC`, which includes it, so frames were queued days ahead and
+  never shown.
+
+`0001` also sets the tracking origin offset to identity. The static system
+devices helper zero-fills it, and the zero quaternion removed the head
+rotation from `xrLocateViews`. The view stayed level while the compositor
+reprojected to the real rotation.
+
+### Display mode
+
+The MCU sets the glasses display with category `1` command `3`: `1` 2D
+1920x1080, `2` 3D 1920x540, `3` 3D 3840x1080 side by side, `4` 3D 3840x1080 at
+72 Hz. hidapi opens the MCU exclusively on macOS, so `capture_service_cpp`
+sends the mode after `@3 1`. It reads the digit from
+`~/.config/xr_tracking/nreal_light/display_mode` and falls back to
+`nreal_light.display_mode` in the capture config, where 0 leaves the mode as
+is.
+
+```bash
+devices/nreal_light/scripts/macos/capture_daemon.sh display-mode sbs   # or 2d, 0-4
+```
+
+The command writes the file and restarts a running capture when the mode
+changes. macOS then lists the `Light` display at 3840x1080.
+
+### Clocks and SHM on macOS
+
+- `std::chrono::steady_clock` in libc++ is `CLOCK_MONOTONIC_RAW`, which differs
+  from `CLOCK_MONOTONIC` by tens of seconds on the tested Mac. All stream
+  timestamps use `steady_clock`. `tools/replay_dataset_shm.py --host-time`
+  shifts recorded timestamps onto that clock, so that the adapter does not
+  drop replayed poses as stale.
+- `fstat` on a POSIX SHM descriptor reports `st_nlink` 0, so the Monado driver
+  readers do not use it to detect an unlinked segment on macOS. They reopen
+  after 500 ms without a new sequence instead.
+- `capture_basalt_backend` creates its pose SHM again after an internal
+  restart. `start.sh` passes `--hmd-reattach-on-stale-ms 500` to the adapter so
+  that it follows the new segment.
 
 ## Device notes
 
@@ -268,4 +348,8 @@ The Monado fork differs from upstream in ways the backend has to handle under
 | `devices/nreal_light/configs/basalt/basalt_vio_config_640x480.json` | Basalt VIO config for 640x480 at 30 Hz |
 | `calibration/nreal_light/factory_to_basalt.py` | factory blob to Basalt calibration and runtime transform |
 | `devices/nreal_light/scripts/macos/build.sh`, `start.sh` | build and launch |
+| `devices/nreal_light/scripts/macos/run_openxr.sh` | OpenXR application on the glasses |
+| `calibration/nreal_light/factory_display_env.py` | factory display calibration to `XR_MONADO_*` display variables |
+| `drivers/monado_driver/scripts/macos/build.sh` | Monado OpenXR runtime build |
+| `drivers/monado_driver/patches/monado/0003-macos-metal-compositor.patch` | Monado MoltenVK buffer sharing and macOS window target |
 | `backends/basalt_vio/scripts/macos/install_basalt.sh` | Basalt fork build |

@@ -50,6 +50,9 @@ def main() -> None:
     ap.add_argument("--skip-s", type=float, default=0.0)
     ap.add_argument("--limit-s", type=float, default=0.0)
     ap.add_argument("--start-delay-s", type=float, default=2.0, help="wait after publishing the registry")
+    ap.add_argument("--host-time", action="store_true",
+                    help="shift timestamps so playback starts at the current steady_clock time, for "
+                         "consumers that drop old poses such as xr_runtime_adapter")
     args = ap.parse_args()
 
     events = load_events(args.dataset, args.skip_s, args.limit_s)
@@ -69,6 +72,11 @@ def main() -> None:
 
     wall0 = time.monotonic()
     data0 = events[0][0]
+    # The C++ consumers use std::chrono::steady_clock, which is CLOCK_MONOTONIC_RAW in
+    # libc++ on macOS and differs from CLOCK_MONOTONIC there.
+    host_clock = getattr(time, "CLOCK_MONOTONIC_RAW", time.CLOCK_MONOTONIC) if sys.platform == "darwin" \
+        else time.CLOCK_MONOTONIC
+    shift = time.clock_gettime_ns(host_clock) - data0 if args.host_time else 0
     pairs = 0
     try:
         for ts, kind, value in events:
@@ -76,6 +84,7 @@ def main() -> None:
             delay = due - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
+            ts += shift
             if kind == "imu":
                 pubs["imu0"].publish(struct.pack("<ffffff", *value), timestamp_ns=ts)
                 continue

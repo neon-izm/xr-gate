@@ -308,7 +308,16 @@ void SensorSource::run_video_tcp() {
           htons(uint16_t(number("XR_MONADO_VIDEO_TCP_PORT", 45812, 1, 65535)));
       if (::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1)
         throw std::runtime_error("video TCP host must be IPv4 or localhost");
+#if defined(SOCK_NONBLOCK) && defined(SOCK_CLOEXEC)
       fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+#else
+      fd = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (fd >= 0 && (::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK) != 0 ||
+                      ::fcntl(fd, F_SETFD, FD_CLOEXEC) != 0)) {
+        ::close(fd);
+        fd = -1;
+      }
+#endif
       if (fd < 0)
         throw std::runtime_error("video socket failed");
       auto transfer = [&](uint8_t *dst, size_t size) {
