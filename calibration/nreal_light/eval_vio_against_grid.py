@@ -77,6 +77,9 @@ def main() -> None:
     ap.add_argument("--traj", type=Path, nargs="+", required=True)
     ap.add_argument("--calib", type=Path, nargs="+", required=True, help="Basalt calibration of each trajectory")
     ap.add_argument("--step", type=int, default=10, help="frame distance of compared pairs")
+    ap.add_argument("--loop", type=float, nargs=2, metavar=("START_S", "END_S"),
+                    help="instead of --step, pair every board frame before START_S with every board frame "
+                         "after END_S, to measure drift after leaving and returning to the board")
     ap.add_argument("--min-tags", type=int, default=8)
     ap.add_argument("--max-reproj-px", type=float, default=1.0)
     args = ap.parse_args()
@@ -135,10 +138,14 @@ def main() -> None:
         T_i_c = make_T(quat_to_R(p["qx"], p["qy"], p["qz"], p["qw"]), [p["px"], p["py"], p["pz"]])
         ts, Ts = load_traj(traj_path)
         rot_err, trans_err, trans_gt, scale = [], [], [], []
-        for i in sorted(pnp):
-            j = i + args.step
-            if j not in pnp:
-                continue
+        if args.loop:
+            t_first = frames[0][0]
+            early = [i for i in sorted(pnp) if frames[i][0] - t_first < args.loop[0] * 1e9]
+            late = [i for i in sorted(pnp) if frames[i][0] - t_first > args.loop[1] * 1e9]
+            pairs = [(i, j) for i in early[::5] for j in late[::5]]
+        else:
+            pairs = [(i, i + args.step) for i in sorted(pnp) if i + args.step in pnp]
+        for i, j in pairs:
             ki = np.searchsorted(ts, frames[i][0])
             kj = np.searchsorted(ts, frames[j][0])
             if ki >= len(ts) or kj >= len(ts):
@@ -159,7 +166,8 @@ def main() -> None:
         r = np.array(rot_err)
         t = np.array(trans_err) * 1000
         g = np.array(trans_gt) * 1000
-        print(f"{traj_path.name}: pairs={len(r)} step={args.step} "
+        mode = f"loop={args.loop[0]:g}s->{args.loop[1]:g}s" if args.loop else f"step={args.step}"
+        print(f"{traj_path.name}: pairs={len(r)} {mode} "
               f"rot_err_deg mean={r.mean():.3f} median={np.median(r):.3f} p90={np.percentile(r, 90):.3f}  "
               f"trans_err_mm mean={t.mean():.2f} median={np.median(t):.2f} p90={np.percentile(t, 90):.2f}  "
               f"gt_motion_mm median={np.median(g):.1f} rel_trans_err={t.sum() / g.sum() * 100:.1f}%  "
