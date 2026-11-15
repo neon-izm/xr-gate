@@ -147,8 +147,40 @@ SECONDS_TOTAL=90 PYTHON_BIN=~/.venvs/xreal_capture_service/bin/python \
 ```
 
 The recorder needs numpy and OpenCV, for example in
-`~/.venvs/xreal_capture_service`. Pass the result to `start.sh` with
-`BASALT_CALIB=/path/basalt_calib.json`.
+`~/.venvs/xreal_capture_service`. Copy the result to
+`~/.config/xr_tracking/nreal_light/basalt_calib_kalibr_640x480.json`;
+`start.sh` then uses it instead of the factory calibration. `BASALT_CALIB`
+still overrides both.
+
+### Evaluating against the screen board
+
+[eval_vio_against_grid.py](../calibration/nreal_light/eval_vio_against_grid.py)
+compares Basalt relative motion with PnP on the static screen board. `--loop`
+pairs board views before and after a walk around the room, so it measures the
+drift accumulated while the board was out of view. A 3x2 board
+(`--cols 3 --rows 2 --bit-px 65`, 54 mm measured tags) is detected at 25 to
+40 cm, where the 5x3 board is too small. `check_grid_view.py
+--beep-min-tags 4` plays a sound while camera 0 sees the board, so the view
+can be held without looking at the terminal. A recording is replayed into SHM
+with [replay_dataset_shm.py](../tools/replay_dataset_shm.py) and run through
+`capture_basalt_backend --trajectory`.
+
+On the tested unit, the glasses were held at the board, looked around the room
+for about a minute, and returned. Drift between board views 15 to 60 s apart,
+with 67 mm of camera motion on the board:
+
+| Calibration | Rotation error | Translation error | Scale |
+| --- | --- | --- | --- |
+| Factory | 0.7 deg | 97 mm | 1.94 |
+| Kalibr | 1.0 deg | 22 mm | 1.27 |
+| Kalibr, matching depth 0.2 m | 1.1 deg | 20 mm | 1.09 |
+
+Pairs with board views 25 to 50 s apart gave 296 mm, 53 mm and 22 mm.
+
+`config.optical_flow_matching_default_depth` is the depth at which a new
+point is searched in the right image. At the default 1.0 m, points on a near
+repetitive pattern such as the screen board match a neighbouring tag and the
+scale grows. The Nreal Light VIO config uses 0.2 m.
 
 ## Measured on the tested unit
 
@@ -160,8 +192,8 @@ M1 Mac, factory calibration, glasses resting still on a desk for 90 s:
 - Drift: 0.13 m in position and about 3 degrees in orientation over 90 s.
 - `tools/xr_app_client.py` receives `hmd_valid=True` poses at y = 1.62 m.
 
-The drift is the main limit of the factory calibration. A Kalibr calibration
-is the next step for better tracking.
+The drift is the main limit of the factory calibration. See the board
+evaluation above for the Kalibr calibration.
 
 ## Coordinate transform
 

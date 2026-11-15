@@ -11,8 +11,9 @@
 # Environment:
 #   NREAL_CALIB_DIR      where the per-unit Basalt calibration is written
 #                        (default ~/.config/xr_tracking/nreal_light)
-#   BASALT_CALIB         use this Basalt calibration instead of the factory one,
-#                        for example a Kalibr result
+#   BASALT_CALIB         use this Basalt calibration; defaults to
+#                        $NREAL_CALIB_DIR/basalt_calib_kalibr_640x480.json when
+#                        present, else the factory calibration
 #   RUNTIME_TRANSFORM    use this xr_runtime_adapter transform JSON
 #   RUNTIME_APP_TCP=1    enable the application TCP server
 #   BASALT_TRAJECTORY    write the Basalt trajectory CSV here
@@ -92,6 +93,10 @@ if [[ "${CAPTURE_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
+if [[ -z "${BASALT_CALIB:-}" && -s "$NREAL_CALIB_DIR/basalt_calib_kalibr_640x480.json" ]]; then
+  BASALT_CALIB="$NREAL_CALIB_DIR/basalt_calib_kalibr_640x480.json"
+  echo "[nreal_light] using Kalibr calibration $BASALT_CALIB"
+fi
 if [[ -z "${BASALT_CALIB:-}" ]]; then
   BASALT_CALIB="$NREAL_CALIB_DIR/basalt_calib_factory_640x480.json"
   RUNTIME_TRANSFORM="${RUNTIME_TRANSFORM:-$NREAL_CALIB_DIR/xr_runtime_transform.json}"
