@@ -3,6 +3,9 @@
 #include <hidapi/hidapi.h>
 #include <libusb.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -22,7 +25,8 @@ constexpr int kUvcInterface = 1;
 constexpr uint8_t kBulkEndpoint = 0x81;
 constexpr size_t kFrameQueueLimit = 4;
 constexpr size_t kImuQueueLimit = 8000;
-constexpr int kImuTransfers = 32;
+// 256 ms of 1 kHz reports, so a busy host can resubmit late without losing samples.
+constexpr int kImuTransfers = 256;
 
 std::string usb_error(const std::string& what, int status) {
   std::string text = what + ": " + libusb_error_name(status);
@@ -145,6 +149,9 @@ struct NrealLightUsb::State {
   bool claimed_hid = false;
 
   std::vector<std::unique_ptr<TransferSlot>> bulks;
+  // One frame assembled from 0x8000-byte UVC payloads. Only the event thread touches it.
+  std::vector<uint8_t> assembling;
+  int assembling_fid = -1;
   // Several queued reads, so a 1 kHz report is not missed while a completed
   // transfer waits to be resubmitted.
   std::vector<std::unique_ptr<TransferSlot>> imus_in;
@@ -306,13 +313,21 @@ struct NrealLightUsb::State {
     }
     if (imus_in.empty()) throw std::runtime_error("cannot submit OV580 IMU transfer");
 
-    for (int i = 0; i < cfg.bulk_transfers; ++i) {
+    // A request per UVC payload. 0x8000 is a whole number of 512-byte packets, so a
+    // read can never end inside a packet (LIBUSB_TRANSFER_OVERFLOW), and the short
+    // last payload of every frame realigns the stream. bulk_transfers counts frames.
+    assembling.clear();
+    assembling.reserve(kNrealLightBulkSize);
+    assembling_fid = -1;
+    const int chunks_per_frame =
+        static_cast<int>((kNrealLightBulkSize + kNrealLightUvcChunk - 1) / kNrealLightUvcChunk);
+    for (int i = 0; i < cfg.bulk_transfers * chunks_per_frame; ++i) {
       auto slot = std::make_unique<TransferSlot>();
       slot->state = this;
-      slot->buffer.resize(kNrealLightBulkSize);
+      slot->buffer.resize(kNrealLightUvcChunk);
       slot->transfer = libusb_alloc_transfer(0);
       libusb_fill_bulk_transfer(slot->transfer, handle, kBulkEndpoint, slot->buffer.data(),
-                                static_cast<int>(slot->buffer.size()), &State::on_bulk, slot.get(), 1000);
+                                static_cast<int>(slot->buffer.size()), &State::on_bulk, slot.get(), 0);
       if (libusb_submit_transfer(slot->transfer) != 0) {
         libusb_free_transfer(slot->transfer);
         break;
@@ -328,20 +343,8 @@ struct NrealLightUsb::State {
     auto* slot = static_cast<TransferSlot*>(transfer->user_data);
     State* state = slot->state;
     slot->inflight = false;
-    const uint64_t now = steady_ns();
-    if (transfer->status == LIBUSB_TRANSFER_COMPLETED &&
-        transfer->actual_length == static_cast<int>(kNrealLightBulkSize) && transfer->buffer[0] != 0) {
-      NrealLightPacket packet{{transfer->buffer, transfer->buffer + transfer->actual_length}, now};
-      {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (state->frames.size() >= kFrameQueueLimit) {
-          state->frames.pop_front();
-          ++state->dropped_frames;
-        }
-        state->frames.push_back(std::move(packet));
-      }
-      ++state->good_frames;
-      state->frame_cv.notify_one();
+    if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
+      state->add_payload(transfer->buffer, static_cast<size_t>(transfer->actual_length));
     } else if (transfer->status == LIBUSB_TRANSFER_NO_DEVICE) {
       state->lost = true;
     } else if (transfer->status != LIBUSB_TRANSFER_CANCELLED) {
@@ -364,6 +367,54 @@ struct NrealLightUsb::State {
     }
   }
 
+  // Each payload starts with a UVC header: length, then flags with the frame id in
+  // bit 0 and end of frame in bit 1. A frame is complete when it holds exactly
+  // kNrealLightBulkSize bytes, headers included, which is what the decoder expects.
+  void add_payload(const uint8_t* data, size_t size) {
+    if (size < 2) return;
+    const uint8_t header = data[0];
+    const uint8_t flags = data[1];
+    if (header < 2 || header > 32 || header > size) {
+      assembling.clear();
+      assembling_fid = -1;
+      return;
+    }
+    const int fid = flags & 0x01;
+    if (fid != assembling_fid) {
+      if (!assembling.empty()) ++dropped_frames;
+      assembling.clear();
+      assembling_fid = fid;
+    }
+    if (assembling.size() + size > kNrealLightBulkSize) {
+      ++dropped_frames;
+      assembling.clear();
+      assembling_fid = -1;
+      return;
+    }
+    assembling.insert(assembling.end(), data, data + size);
+    const bool end = (flags & 0x02) != 0 || size < kNrealLightUvcChunk || assembling.size() == kNrealLightBulkSize;
+    if (!end) return;
+    if (assembling.size() == kNrealLightBulkSize) {
+      NrealLightPacket packet{std::move(assembling), steady_ns()};
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (frames.size() >= kFrameQueueLimit) {
+          frames.pop_front();
+          ++dropped_frames;
+        }
+        frames.push_back(std::move(packet));
+      }
+      ++good_frames;
+      frame_cv.notify_one();
+      assembling = {};
+      assembling.reserve(kNrealLightBulkSize);
+    } else {
+      ++dropped_frames;
+      assembling.clear();
+    }
+    assembling_fid = -1;
+  }
+
   static void LIBUSB_CALL on_imu(libusb_transfer* transfer) {
     auto* slot = static_cast<TransferSlot*>(transfer->user_data);
     State* state = slot->state;
@@ -383,6 +434,9 @@ struct NrealLightUsb::State {
   }
 
   void events() {
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
     while (running || any_inflight()) {
       if (!running) {
         for (auto& slot : bulks) {

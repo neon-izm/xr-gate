@@ -56,7 +56,8 @@ nreal_light:
   apply_factory_imu: true
   # 0 uses camera_imu_timestamp_offset_us from the factory blob.
   camera_timestamp_offset_us: 0
-  bulk_transfers: 4
+  # Frames of 0x8000-byte reads kept queued, about 33 ms each.
+  bulk_transfers: 8
   # 0 keeps the display mode the glasses booted with (2D 1920x1080).
   # capture_daemon.sh display-mode writes the file below; 3 is 3840x1080
   # side by side, needed for stereo OpenXR.

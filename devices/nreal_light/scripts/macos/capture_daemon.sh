@@ -79,6 +79,8 @@ write_plist() {
     <dict><key>$ENABLE_FILE</key><true/></dict>
   </dict>
   <key>ThrottleInterval</key><integer>5</integer>
+  <!-- The default throttles CPU and I/O; a 1 kHz IMU then loses reports when the Mac is busy. -->
+  <key>ProcessType</key><string>Interactive</string>
   <key>WorkingDirectory</key><string>/</string>
   <key>StandardOutPath</key><string>$DAEMON_LOG</string>
   <key>StandardErrorPath</key><string>$DAEMON_LOG</string>
