@@ -9,6 +9,10 @@
 #   capture_daemon.sh stop       stop capture
 #   capture_daemon.sh restart    reopen the glasses, for example after a stall
 #   capture_daemon.sh status
+#   capture_daemon.sh display-mode [2d|sbs|0-4]
+#                                show or set the glasses display mode; sbs is
+#                                3840x1080 side by side for stereo OpenXR. A
+#                                running capture restarts to apply it.
 #
 # launchd keeps the job alive while the enable file exists. The process drops
 # to the installing user after claiming USB, so start, stop, and restart run
@@ -27,6 +31,8 @@ DAEMON_BIN=$INSTALL_DIR/capture_service_cpp
 DAEMON_CONFIG=$INSTALL_DIR/capture.yaml
 DAEMON_LOG=/Library/Logs/xr-gate-nreal-light-capture.log
 ENABLE_FILE="${NREAL_CAPTURE_ENABLE_FILE:-$HOME/.config/xr_tracking/nreal_light/capture.enabled}"
+# Must match nreal_light.display_mode_file in the capture config.
+DISPLAY_MODE_FILE="$HOME/.config/xr_tracking/nreal_light/display_mode"
 CAPTURE_BIN="${CAPTURE_BIN:-$ROOT_PROJECT/bin/capture_service_cpp/capture_service_cpp}"
 CAPTURE_CONFIG="${CAPTURE_CONFIG:-$DEVICE_DIR/configs/capture_service/nreal_light_macos_device_time_shm.yaml}"
 CAPTURE_REGISTRY="${CAPTURE_REGISTRY:-/tmp/capture_service_streams.json}"
@@ -65,6 +71,7 @@ write_plist() {
   <dict>
     <key>SUDO_UID</key><string>$(id -u)</string>
     <key>SUDO_GID</key><string>$(id -g)</string>
+    <key>HOME</key><string>$HOME</string>
   </dict>
   <key>KeepAlive</key>
   <dict>
@@ -199,6 +206,31 @@ cmd_restart() {
   cmd_start
 }
 
+cmd_display_mode() {
+  local mode
+  case "${1:-}" in
+    "")
+      mode=$(cat "$DISPLAY_MODE_FILE" 2>/dev/null || echo 0)
+      echo "display mode: ${mode:-0} (0 keep, 1 2D 1920x1080, 2 3D 1920x540, 3 3D 3840x1080, 4 3D 3840x1080 72 Hz)"
+      return 0
+      ;;
+    2d) mode=1 ;;
+    sbs) mode=3 ;;
+    [0-4]) mode=$1 ;;
+    *) echo "[capture_daemon] display-mode takes 2d, sbs or 0-4" >&2; exit 2 ;;
+  esac
+  if [[ "$(cat "$DISPLAY_MODE_FILE" 2>/dev/null)" == "$mode" ]]; then
+    echo "[capture_daemon] display mode $mode"
+    return 0
+  fi
+  mkdir -p "$(dirname "$DISPLAY_MODE_FILE")"
+  echo "$mode" >"$DISPLAY_MODE_FILE"
+  echo "[capture_daemon] display mode $mode"
+  if [[ -n "$(running_pid)" ]]; then
+    cmd_restart
+  fi
+}
+
 cmd_status() {
   if [[ ! -f "$PLIST" ]]; then
     echo "not installed"
@@ -223,5 +255,6 @@ case "${1:-}" in
   stop) cmd_stop ;;
   restart) cmd_restart ;;
   status) cmd_status ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  display-mode) cmd_display_mode "${2:-}" ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

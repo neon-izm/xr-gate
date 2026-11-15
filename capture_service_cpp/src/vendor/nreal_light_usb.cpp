@@ -37,7 +37,7 @@ std::string usb_error(const std::string& what, int status) {
 // (SDK active) and then an "@K" heartbeat every 250 ms.
 class NrealLightMcu {
  public:
-  NrealLightMcu() {
+  explicit NrealLightMcu(int display_mode) {
     hid_init();
     hid_device_info* infos = hid_enumerate(kNrealLightMcuVendorId, kNrealLightMcuProductId);
     for (hid_device_info* info = infos; info != nullptr && device_ == nullptr; info = info->next) {
@@ -51,6 +51,14 @@ class NrealLightMcu {
     }
     hid_free_enumeration(infos);
     if (device_ == nullptr) throw std::runtime_error("Nreal Light MCU 0486:573c did not answer the SDK command");
+    if (display_mode > 0) {
+      if (request('1', '3', {static_cast<uint8_t>('0' + display_mode)})) {
+        std::cerr << "[capture_service_cpp] nreal_light display mode " << display_mode << std::endl;
+      } else {
+        std::cerr << "[capture_service_cpp][WARN] nreal_light display mode " << display_mode << " not acknowledged"
+                  << std::endl;
+      }
+    }
     running_ = true;
     heartbeat_ = std::thread([this] { heartbeat(); });
   }
@@ -99,6 +107,19 @@ class NrealLightMcu {
   std::atomic<bool> running_{false};
   std::thread heartbeat_;
 };
+
+int display_mode(const NrealLightConfig& cfg) {
+  if (cfg.display_mode_file.empty()) return cfg.display_mode;
+  std::ifstream file(cfg.display_mode_file);
+  char digit = 0;
+  if (!(file >> digit)) return cfg.display_mode;
+  if (digit < '0' || digit > '4') {
+    std::cerr << "[capture_service_cpp][WARN] ignoring " << cfg.display_mode_file << ": expected a digit 0-4"
+              << std::endl;
+    return cfg.display_mode;
+  }
+  return digit - '0';
+}
 
 }  // namespace
 
@@ -155,7 +176,7 @@ struct NrealLightUsb::State {
   }
 
   void open_device() {
-    if (cfg.mcu_heartbeat) mcu = std::make_unique<NrealLightMcu>();
+    if (cfg.mcu_heartbeat) mcu = std::make_unique<NrealLightMcu>(display_mode(cfg));
     if (libusb_init(&context) != 0) throw std::runtime_error("libusb_init failed");
     // The OV580 enumerates again a moment after the MCU powers it on.
     for (int i = 0; i < 100 && !handle; ++i) {

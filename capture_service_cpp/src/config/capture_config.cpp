@@ -663,6 +663,8 @@ void apply_yaml(const FlatYaml& y, RuntimeConfig& cfg) {
   cfg.nreal_light.camera_timestamp_offset_us = camera_offset_us;
   set_int(y, {"nreal_light.bulk_transfers"}, cfg.nreal_light.bulk_transfers);
   set_bool(y, {"nreal_light.mcu_heartbeat"}, cfg.nreal_light.mcu_heartbeat);
+  set_int(y, {"nreal_light.display_mode"}, cfg.nreal_light.display_mode);
+  set_string(y, {"nreal_light.display_mode_file"}, cfg.nreal_light.display_mode_file);
 
   if (previous_driver != cfg.imu.driver && cfg.imu.driver == "nreal_light" && !raw_enabled_explicit) {
     cfg.imu.raw_enabled = false;
@@ -738,6 +740,10 @@ void validate_runtime_config(RuntimeConfig& cfg) {
   cfg.profile_name = trim(cfg.profile_name);
   cfg.backend_control_file = expand_user_path(trim(cfg.backend_control_file));
   cfg.nreal_light.factory_config_path = expand_user_path(trim(cfg.nreal_light.factory_config_path));
+  cfg.nreal_light.display_mode_file = expand_user_path(trim(cfg.nreal_light.display_mode_file));
+  if (cfg.nreal_light.display_mode < 0 || cfg.nreal_light.display_mode > 4) {
+    throw std::runtime_error("nreal_light.display_mode must be 0-4");
+  }
 
   if (!cfg.profile_name.empty()) {
     for (const unsigned char c : cfg.profile_name) {

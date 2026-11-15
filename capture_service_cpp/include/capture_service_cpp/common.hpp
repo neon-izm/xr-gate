@@ -194,6 +194,12 @@ struct NrealLightConfig {
   int bulk_transfers = 4;
   // Send "@3 1" and the 250 ms heartbeat to the glasses MCU.
   bool mcu_heartbeat = true;
+  // Display mode set through the MCU at startup: 0 keeps the current mode,
+  // 1 2D 1920x1080, 2 3D 1920x540 per eye, 3 3D 3840x1080, 4 3D 3840x1080 72 Hz.
+  int display_mode = 0;
+  // A digit 0-4 in this file overrides display_mode, so the mode can change
+  // without reinstalling a root-owned config. Missing or empty: display_mode.
+  std::string display_mode_file;
 };
 
 struct RuntimeConfig {
