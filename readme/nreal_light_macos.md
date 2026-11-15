@@ -208,6 +208,14 @@ with 67 mm of camera motion on the board:
 
 Pairs with board views 25 to 50 s apart gave 296 mm, 53 mm and 22 mm.
 
+[plot_vio_session.py](../calibration/nreal_light/plot_vio_session.py) draws a
+session in 3D: the first board segment fixes the Basalt world to the board,
+and every later return shows the PnP pose next to the Basalt pose. It writes
+an interactive `session3d.html` and a `session3d.png`. In a live 112 s session
+with the default Kalibr calibration, worn on the head and returned to the board
+at 20 cm about every 30 s, the drift at the returns was 35, 61 and 58 mm and
+1.8 to 2.8 degrees.
+
 `config.optical_flow_matching_default_depth` is the depth at which a new
 point is searched in the right image. At the default 1.0 m, points on a near
 repetitive pattern such as the screen board match a neighbouring tag and the

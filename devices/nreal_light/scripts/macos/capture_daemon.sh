@@ -31,6 +31,7 @@ CAPTURE_BIN="${CAPTURE_BIN:-$ROOT_PROJECT/bin/capture_service_cpp/capture_servic
 CAPTURE_CONFIG="${CAPTURE_CONFIG:-$DEVICE_DIR/configs/capture_service/nreal_light_macos_device_time_shm.yaml}"
 CAPTURE_REGISTRY="${CAPTURE_REGISTRY:-/tmp/capture_service_streams.json}"
 START_TIMEOUT_S="${START_TIMEOUT_S:-30}"
+PYTHON_BIN="${PYTHON_BIN:-$HOME/.venvs/xreal_capture_service/bin/python}"
 
 run_root() {
   if [[ -t 0 ]]; then
@@ -120,20 +121,52 @@ require_installed() {
   [[ -f "$PLIST" ]] || { echo "[capture_daemon] not installed; run: $0 install" >&2; exit 2; }
 }
 
+frames_flowing() {
+  # A restarted process can publish the registry and then fail to reopen the
+  # OV580, so check that camera0 frames advance.
+  [[ -x "$PYTHON_BIN" ]] || return 0
+  (cd "$ROOT_PROJECT" && "$PYTHON_BIN" - "$CAPTURE_REGISTRY" <<'EOF'
+import sys, time
+sys.path.insert(0, ".")
+from capture_client.client import CaptureClient
+try:
+    c = CaptureClient.from_shm_registry(sys.argv[1], required_streams=["camera0"])
+    a = c.latest_sequence("camera0")
+    time.sleep(1.0)
+    b = c.latest_sequence("camera0")
+    c.close()
+except Exception:
+    sys.exit(1)
+sys.exit(0 if b > a else 1)
+EOF
+  )
+}
+
 cmd_start() {
   require_installed
   if [[ -n "$(running_pid)" && -s "$CAPTURE_REGISTRY" ]]; then
-    echo "[capture_daemon] running; registry $CAPTURE_REGISTRY"
-    return 0
+    if frames_flowing; then
+      echo "[capture_daemon] running; registry $CAPTURE_REGISTRY"
+      return 0
+    fi
+    echo "[capture_daemon] no frames; reopening the glasses" >&2
+    kill "$(running_pid)" 2>/dev/null || true
   fi
+  # Only log lines written from here on describe this start.
+  local log_mark
+  log_mark=$(wc -c <"$DAEMON_LOG" 2>/dev/null || echo 0)
   rm -f "$CAPTURE_REGISTRY"
   mkdir -p "$(dirname "$ENABLE_FILE")"
   touch "$ENABLE_FILE"
   local deadline=$((SECONDS + START_TIMEOUT_S))
   while ((SECONDS < deadline)); do
-    if [[ -s "$CAPTURE_REGISTRY" && -n "$(running_pid)" ]]; then
+    if [[ -s "$CAPTURE_REGISTRY" && -n "$(running_pid)" ]] && frames_flowing; then
       echo "[capture_daemon] running; registry $CAPTURE_REGISTRY"
       return 0
+    fi
+    if tail -c +$((log_mark + 1)) "$DAEMON_LOG" 2>/dev/null | grep -q "05a9:0680 not found"; then
+      echo "[capture_daemon] the OV580 is off the bus; unplug and replug the glasses" >&2
+      exit 1
     fi
     sleep 0.2
   done
@@ -144,15 +177,15 @@ cmd_start() {
 
 cmd_stop() {
   rm -f "$ENABLE_FILE"
+  # A process still opening the OV580 runs as root and ignores this user's
+  # signals until it drops privileges, so keep signalling for a while.
   local pid
-  pid=$(running_pid)
-  if [[ -n "$pid" ]]; then
+  for _ in $(seq 1 60); do
+    pid=$(running_pid)
+    [[ -z "$pid" ]] && break
     kill "$pid" 2>/dev/null || true
-    for _ in $(seq 1 50); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.1
-    done
-  fi
+    sleep 0.25
+  done
   rm -f "$CAPTURE_REGISTRY"
   echo "[capture_daemon] stopped"
 }

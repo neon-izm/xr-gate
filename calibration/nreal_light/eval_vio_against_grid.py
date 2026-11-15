@@ -65,6 +65,66 @@ def load_traj(path: Path) -> tuple[np.ndarray, list[np.ndarray]]:
     return np.array(ts), Ts
 
 
+def load_target(path: Path) -> dict[int, np.ndarray]:
+    target = {}
+    for line in path.read_text().splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            target[k.strip()] = v.strip().strip("'")
+    return board_points(int(target["tagCols"]), int(target["tagRows"]), float(target["tagSize"]),
+                        float(target["tagSpacing"]))
+
+
+def load_T_imu_cam0(calib_path: Path) -> np.ndarray:
+    p = json.loads(calib_path.read_text())["value0"]["T_imu_cam"][0]
+    return make_T(quat_to_R(p["qx"], p["qy"], p["qz"], p["qw"]), [p["px"], p["py"], p["pz"]])
+
+
+def load_frames(dataset: Path) -> list[tuple[int, str]]:
+    with open(dataset / "camera_timestamps.csv", newline="") as f:
+        return [(int(row["timestamp_ns"]), row["cam0_file"]) for row in csv.DictReader(f)]
+
+
+def board_poses(dataset: Path, frames: list[tuple[int, str]], pts: dict[int, np.ndarray], gt_calib: Path,
+                min_tags: int, max_reproj_px: float) -> dict[int, np.ndarray]:
+    """T_board_cam0 from PnP for every frame index with enough tags."""
+    gt = json.loads(gt_calib.read_text())["value0"]["intrinsics"][0]["intrinsics"]
+    K = np.array([[gt["fx"], 0, gt["cx"]], [0, gt["fy"], gt["cy"]], [0, 0, 1]])
+    dist = np.array([gt["k1"], gt["k2"], gt["p1"], gt["p2"], gt.get("k3", 0.0)])
+
+    params = cv2.aruco.DetectorParameters()
+    params.markerBorderBits = 2
+    params.adaptiveThreshWinSizeMin = 5
+    params.adaptiveThreshWinSizeMax = 53
+    params.adaptiveThreshWinSizeStep = 4
+    params.errorCorrectionRate = 0.8
+    params.maxErroneousBitsInBorderRate = 0.5
+    detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), params)
+
+    pnp: dict[int, np.ndarray] = {}
+    for idx, (_, rel) in enumerate(frames):
+        img = cv2.imread(str(dataset / rel), cv2.IMREAD_GRAYSCALE)
+        corners, ids, _ = detector.detectMarkers(img)
+        if ids is None or len(ids) < min_tags:
+            continue
+        obj = np.concatenate([pts[int(i)] for i in ids.flatten() if int(i) in pts])
+        imgp = np.concatenate([c.reshape(4, 2) for c, i in zip(corners, ids.flatten()) if int(i) in pts])
+        # Screen glow shrinks the black squares, so edge-fitted tag corners
+        # sit about 2 px inside. The X junction with the corner square does
+        # not move; refine onto it like Kalibr does.
+        imgp = cv2.cornerSubPix(img, imgp.astype(np.float32).reshape(-1, 1, 2), (7, 7), (-1, -1),
+                                (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.01)).reshape(-1, 2)
+        ok, rvec, tvec = cv2.solvePnP(obj, imgp, K, dist, flags=cv2.SOLVEPNP_ITERATIVE)
+        if not ok:
+            continue
+        proj, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
+        err = float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - imgp) ** 2, axis=1))))
+        if err > max_reproj_px:
+            continue
+        pnp[idx] = np.linalg.inv(make_T(cv2.Rodrigues(rvec)[0], tvec))
+    return pnp
+
+
 def rot_angle_deg(R: np.ndarray) -> float:
     return math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(R) - 1) / 2))))
 
@@ -86,58 +146,13 @@ def main() -> None:
     if len(args.traj) != len(args.calib):
         raise SystemExit("--traj and --calib need the same count")
 
-    target = {}
-    for line in args.target.read_text().splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            target[k.strip()] = v.strip().strip("'")
-    pts = board_points(int(target["tagCols"]), int(target["tagRows"]), float(target["tagSize"]), float(target["tagSpacing"]))
-
-    gt = json.loads(args.gt_calib.read_text())["value0"]["intrinsics"][0]["intrinsics"]
-    K = np.array([[gt["fx"], 0, gt["cx"]], [0, gt["fy"], gt["cy"]], [0, 0, 1]])
-    dist = np.array([gt["k1"], gt["k2"], gt["p1"], gt["p2"], gt.get("k3", 0.0)])
-
-    params = cv2.aruco.DetectorParameters()
-    params.markerBorderBits = 2
-    params.adaptiveThreshWinSizeMin = 5
-    params.adaptiveThreshWinSizeMax = 53
-    params.adaptiveThreshWinSizeStep = 4
-    params.errorCorrectionRate = 0.8
-    params.maxErroneousBitsInBorderRate = 0.5
-    detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), params)
-
-    frames = []
-    with open(args.dataset / "camera_timestamps.csv", newline="") as f:
-        for row in csv.DictReader(f):
-            frames.append((int(row["timestamp_ns"]), row["cam0_file"]))
-
-    pnp: dict[int, np.ndarray] = {}
-    for idx, (ts, rel) in enumerate(frames):
-        img = cv2.imread(str(args.dataset / rel), cv2.IMREAD_GRAYSCALE)
-        corners, ids, _ = detector.detectMarkers(img)
-        if ids is None or len(ids) < args.min_tags:
-            continue
-        obj = np.concatenate([pts[int(i)] for i in ids.flatten() if int(i) in pts])
-        imgp = np.concatenate([c.reshape(4, 2) for c, i in zip(corners, ids.flatten()) if int(i) in pts])
-        # Screen glow shrinks the black squares, so edge-fitted tag corners
-        # sit about 2 px inside. The X junction with the corner square does
-        # not move; refine onto it like Kalibr does.
-        imgp = cv2.cornerSubPix(img, imgp.astype(np.float32).reshape(-1, 1, 2), (7, 7), (-1, -1),
-                                (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.01)).reshape(-1, 2)
-        ok, rvec, tvec = cv2.solvePnP(obj, imgp, K, dist, flags=cv2.SOLVEPNP_ITERATIVE)
-        if not ok:
-            continue
-        proj, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
-        err = float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - imgp) ** 2, axis=1))))
-        if err > args.max_reproj_px:
-            continue
-        T_c_b = make_T(cv2.Rodrigues(rvec)[0], tvec)
-        pnp[idx] = np.linalg.inv(T_c_b)  # T_board_cam
+    frames = load_frames(args.dataset)
+    pnp = board_poses(args.dataset, frames, load_target(args.target), args.gt_calib, args.min_tags,
+                      args.max_reproj_px)
     print(f"PnP frames: {len(pnp)} of {len(frames)}")
 
     for traj_path, calib_path in zip(args.traj, args.calib):
-        p = json.loads(calib_path.read_text())["value0"]["T_imu_cam"][0]
-        T_i_c = make_T(quat_to_R(p["qx"], p["qy"], p["qz"], p["qw"]), [p["px"], p["py"], p["pz"]])
+        T_i_c = load_T_imu_cam0(calib_path)
         ts, Ts = load_traj(traj_path)
         rot_err, trans_err, trans_gt, scale = [], [], [], []
         if args.loop:
