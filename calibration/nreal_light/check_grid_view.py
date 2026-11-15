@@ -5,10 +5,14 @@ Detects t36h11 tags with 2 border bits, the layout of Kalibr AprilGrids, in
 camera0 and camera1 and prints the number of tags, image brightness and the
 board coverage of each camera. With --show, opens a window with both images
 and the detections. With --save-dir, writes the latest pair as PNG on exit.
+With --beep-min-tags, the Mac plays a short sound for every detection with at
+least that many tags in camera0, so the board view can be held without
+looking at the terminal.
 """
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -31,6 +35,8 @@ def main() -> None:
     ap.add_argument("--rate", type=float, default=5.0, help="detections per second")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--save-dir", type=Path)
+    ap.add_argument("--beep-min-tags", type=int, default=0, help="0 disables the sound")
+    ap.add_argument("--beep-sound", default="/System/Library/Sounds/Tink.aiff")
     args = ap.parse_args()
 
     params = cv2.aruco.DetectorParameters()
@@ -63,6 +69,8 @@ def main() -> None:
             for name, img in zip(("cam0", "cam1"), images):
                 corners, ids, _ = detector.detectMarkers(img)
                 n = 0 if ids is None else len(ids)
+                if name == "cam0" and 0 < args.beep_min_tags <= n:
+                    subprocess.Popen(["afplay", args.beep_sound])
                 cover = 0.0
                 if n:
                     pts = np.concatenate([c.reshape(-1, 2) for c in corners])

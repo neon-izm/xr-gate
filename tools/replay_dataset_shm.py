@@ -57,11 +57,11 @@ def main() -> None:
                        cv2.IMREAD_GRAYSCALE)
     h, w = first.shape
     pubs = {
-        name: ShmRingPublisher(StreamSpec(name, StreamKind.IMAGE, w, h, int(FormatCode.GRAY8), w * h, 8, name,
+        name: ShmRingPublisher(StreamSpec(name, StreamKind.IMAGE, w, h, int(FormatCode.GRAY8), w * h, 64, name,
                                           f"replay of {args.dataset.name}"), namespace=args.namespace)
         for name in ("camera0", "camera1")
     }
-    pubs["imu0"] = ShmRingPublisher(StreamSpec("imu0", StreamKind.IMU, 0, 0, int(FormatCode.IMU_F32_LE), 24, 4096,
+    pubs["imu0"] = ShmRingPublisher(StreamSpec("imu0", StreamKind.IMU, 0, 0, int(FormatCode.IMU_F32_LE), 24, 65536,
                                                "imu0", "gyro rad/s, accel m/s^2"), namespace=args.namespace)
     StreamRegistry(args.registry).write(namespace=args.namespace, publishers=pubs, config_path=str(args.dataset))
     print(f"[replay] {len(events)} events from {args.dataset}", flush=True)

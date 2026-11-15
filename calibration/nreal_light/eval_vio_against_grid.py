@@ -102,6 +102,8 @@ def main() -> None:
     params.adaptiveThreshWinSizeMin = 5
     params.adaptiveThreshWinSizeMax = 53
     params.adaptiveThreshWinSizeStep = 4
+    params.errorCorrectionRate = 0.8
+    params.maxErroneousBitsInBorderRate = 0.5
     detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), params)
 
     frames = []
